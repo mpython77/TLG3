@@ -1,0 +1,1840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Automation Scheduler Pro</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --primary-light: #818cf8;
+            --secondary: #ec4899;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --info: #06b6d4;
+            --dark: #1e293b;
+            --light: #f8fafc;
+            --border: #e2e8f0;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --gradient-1: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --gradient-2: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --gradient-3: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --gradient-4: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            font-size: 14px;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            animation: backgroundMove 20s linear infinite;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        @keyframes backgroundMove {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(50px, 50px); }
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 24px;
+            box-shadow: 0 40px 80px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+            position: relative;
+            z-index: 1;
+            animation: slideIn 0.5s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            background: var(--gradient-1);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 2px, transparent 2px);
+            background-size: 40px 40px;
+            animation: headerPattern 15s linear infinite;
+        }
+
+        @keyframes headerPattern {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .header-content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            text-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        }
+
+        .header p {
+            opacity: 0.95;
+            font-size: 16px;
+            font-weight: 400;
+        }
+
+        .tabs {
+            display: flex;
+            background: var(--light);
+            border-bottom: 2px solid var(--border);
+            overflow-x: auto;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+            background: rgba(248, 250, 252, 0.95);
+        }
+
+        .tab {
+            flex: 1;
+            min-width: 140px;
+            padding: 18px 20px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: 600;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            white-space: nowrap;
+            color: #64748b;
+            position: relative;
+        }
+
+        .tab::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%) scaleX(0);
+            width: 80%;
+            height: 3px;
+            background: var(--gradient-1);
+            border-radius: 3px 3px 0 0;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .tab:hover {
+            background: rgba(99, 102, 241, 0.05);
+            color: var(--primary);
+        }
+
+        .tab.active {
+            background: white;
+            color: var(--primary);
+        }
+
+        .tab.active::after {
+            transform: translateX(-50%) scaleX(1);
+        }
+
+        .tab-content {
+            padding: 30px;
+            display: none;
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .status-card {
+            background: white;
+            padding: 25px;
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            text-align: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .status-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--gradient-1);
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+
+        .status-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px var(--shadow);
+            border-color: var(--primary-light);
+        }
+
+        .status-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .status-card h3 {
+            color: #64748b;
+            margin-bottom: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--dark);
+            font-size: 14px;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            font-size: 15px;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            background: white;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+            transform: translateY(-1px);
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            margin-right: 10px;
+            margin-bottom: 10px;
+            position: relative;
+            overflow: hidden;
+            font-family: inherit;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+
+        .btn:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .btn-primary {
+            background: var(--gradient-1);
+            color: white;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.5);
+        }
+
+        .btn-success {
+            background: var(--gradient-4);
+            color: white;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.5);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(239, 68, 68, 0.5);
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+            color: #92400e;
+            box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);
+        }
+
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(245, 158, 11, 0.5);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .accounts-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 20px;
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px var(--shadow);
+        }
+
+        .accounts-table thead {
+            background: var(--gradient-1);
+            color: white;
+        }
+
+        .accounts-table th,
+        .accounts-table td {
+            padding: 16px 12px;
+            text-align: left;
+        }
+
+        .accounts-table th {
+            font-weight: 700;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .accounts-table tbody tr {
+            transition: all 0.3s ease;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .accounts-table tbody tr:hover {
+            background: linear-gradient(90deg, rgba(99, 102, 241, 0.05) 0%, transparent 100%);
+            transform: scale(1.01);
+        }
+
+        .status-badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: inline-block;
+        }
+
+        .status-connected {
+            background: linear-gradient(135deg, #d4fc79 0%, #96e6a1 100%);
+            color: #065f46;
+        }
+
+        .status-error {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: #7f1d1d;
+        }
+
+        .status-waiting {
+            background: linear-gradient(135deg, #fdeb71 0%, #f8d800 100%);
+            color: #78350f;
+        }
+
+        .log-container {
+            background: #1e293b;
+            color: #10b981;
+            padding: 20px;
+            border-radius: 16px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            height: 450px;
+            overflow-y: auto;
+            margin-top: 20px;
+            white-space: pre-line;
+            word-wrap: break-word;
+            font-size: 13px;
+            box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
+        }
+
+        .log-container::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .log-container::-webkit-scrollbar-track {
+            background: #0f172a;
+            border-radius: 10px;
+        }
+
+        .log-container::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #6366f1 0%, #8b5cf6 100%);
+            border-radius: 10px;
+        }
+
+        .progress-container {
+            background: white;
+            padding: 25px;
+            border-radius: 16px;
+            margin: 20px 0;
+            border: 2px solid var(--border);
+            box-shadow: 0 4px 20px var(--shadow);
+        }
+
+        .progress-container.paused {
+            border-color: var(--warning);
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.05) 0%, transparent 100%);
+        }
+
+        .progress-container h3 {
+            margin-bottom: 18px;
+            color: var(--dark);
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 12px;
+            background: var(--light);
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 15px 0;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--gradient-1);
+            width: 0%;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-fill.paused {
+            background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+        }
+
+        .progress-text {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--dark);
+            margin-top: 12px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 9999;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(8px);
+        }
+
+        .modal.show {
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 35px;
+            border-radius: 24px;
+            width: 90%;
+            max-width: 550px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 40px 80px rgba(0, 0, 0, 0.3);
+            position: relative;
+            animation: modalShow 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        @keyframes modalShow {
+            from {
+                opacity: 0;
+                transform: scale(0.9) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        .modal-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .modal-header h2 {
+            color: var(--dark);
+            margin-bottom: 10px;
+            font-size: 1.8rem;
+            font-weight: 800;
+        }
+
+        .modal-header p {
+            color: #64748b;
+            font-size: 15px;
+        }
+
+        .close {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            font-size: 28px;
+            font-weight: bold;
+            color: #94a3b8;
+            cursor: pointer;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+            background: var(--light);
+        }
+
+        .close:hover {
+            color: var(--danger);
+            background: #fee2e2;
+            transform: rotate(90deg);
+        }
+
+        .target-channels {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 15px;
+            min-height: 100px;
+            background: var(--light);
+            transition: all 0.3s ease;
+        }
+
+        .target-channels:hover {
+            border-color: var(--primary-light);
+            background: rgba(99, 102, 241, 0.03);
+        }
+
+        .channel-tag {
+            display: inline-block;
+            background: var(--gradient-1);
+            color: white;
+            padding: 8px 14px;
+            border-radius: 20px;
+            margin: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            animation: tagAppear 0.3s ease-out;
+        }
+
+        @keyframes tagAppear {
+            from {
+                opacity: 0;
+                transform: scale(0.8);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .channel-tag:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        }
+
+        .channel-tag .remove {
+            margin-left: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            opacity: 0.8;
+        }
+
+        .channel-tag .remove:hover {
+            opacity: 1;
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 16px 24px;
+            border-radius: 12px;
+            color: white;
+            font-weight: 600;
+            z-index: 10000;
+            transform: translateX(500px);
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            font-size: 14px;
+            max-width: 350px;
+            animation: shake 0.5s ease;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
+        .notification.success {
+            background: var(--gradient-4);
+        }
+
+        .notification.error {
+            background: var(--gradient-2);
+        }
+
+        .notification.info {
+            background: var(--gradient-3);
+        }
+
+        .info-box {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+            padding: 18px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            border-left: 4px solid var(--primary);
+        }
+
+        .schedule-form {
+            background: white;
+            padding: 25px;
+            border-radius: 16px;
+            margin-bottom: 30px;
+            border: 2px solid var(--border);
+            box-shadow: 0 4px 20px var(--shadow);
+        }
+
+        .schedule-form h3 {
+            margin-bottom: 20px;
+            font-size: 1.4rem;
+            font-weight: 800;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .server-time-display {
+            background: var(--gradient-1);
+            padding: 20px;
+            border-radius: 16px;
+            color: white;
+            text-align: center;
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
+        }
+
+        .server-time-display h4 {
+            margin-bottom: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .current-time {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+            text-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        }
+
+        .current-date {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        .time-slot {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            border: 2px solid var(--border);
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+        }
+
+        .time-slot:hover {
+            border-color: var(--primary-light);
+            box-shadow: 0 4px 20px var(--shadow);
+        }
+
+        .id-selection-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+            gap: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+            background: var(--light);
+            border-radius: 8px;
+        }
+
+        .id-checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .id-checkbox-item:hover {
+            border-color: var(--primary);
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        .id-checkbox-item input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+        .id-checkbox-item label {
+            cursor: pointer;
+            margin: 0;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 16px;
+            }
+
+            .header {
+                padding: 25px 20px;
+            }
+
+            .header h1 {
+                font-size: 1.8rem;
+            }
+
+            .tab-content {
+                padding: 20px;
+            }
+
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .modal-content {
+                width: 95%;
+                padding: 25px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1>🚀 Telegram Automation Pro</h1>
+                <p>Advanced Multi-Account Scheduler & Forwarder</p>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('control')">📊 Control Panel</button>
+            <button class="tab" onclick="showTab('scanner')">🔍 Post Scanner</button>
+            <button class="tab" onclick="showTab('scheduler')">⏰ Scheduler</button>
+            <button class="tab" onclick="showTab('logs')">📝 Logs</button>
+        </div>
+
+        <div id="control" class="tab-content active">
+            <div class="status-grid">
+                <div class="status-card">
+                    <h3>Total Accounts</h3>
+                    <div class="status-value" id="totalAccounts">0</div>
+                </div>
+                <div class="status-card">
+                    <h3>Connected</h3>
+                    <div class="status-value" id="connectedAccounts">0</div>
+                </div>
+                <div class="status-card">
+                    <h3>Scheduler</h3>
+                    <div class="status-value" id="schedulerStatus">Stopped</div>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <button class="btn btn-primary" onclick="connectAllAccounts()" id="connectBtn">🔌 Connect All</button>
+                <button class="btn btn-danger" onclick="disconnectAllAccounts()">🔌 Disconnect All</button>
+                <button class="btn btn-success" onclick="showAddAccountModal()">➕ Add Account</button>
+                <button class="btn btn-warning" onclick="showRemoveChannelsModal()">🗑️ Remove Channels</button>
+            </div>
+
+            <div id="connectionProgress" class="progress-container" style="display: none;">
+                <h3>⚡ Sequential Connection Progress</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text" id="progressText">Ready</div>
+            </div>
+
+            <table class="accounts-table" id="accountsTable">
+                <thead>
+                    <tr>
+                        <th>Select</th>
+                        <th>Account</th>
+                        <th>Source</th>
+                        <th>Targets</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="accountsTableBody">
+                </tbody>
+            </table>
+        </div>
+
+        <div id="scanner" class="tab-content">
+            <div style="margin-bottom: 20px;">
+                <button class="btn btn-success" onclick="scanAllPosts()">🔍 Scan All Posts</button>
+                <button class="btn btn-primary" onclick="showScannedIdsModal()">📋 View Scanned IDs</button>
+                <button class="btn btn-warning" onclick="clearScanner()">🧹 Clear Scanner</button>
+            </div>
+
+            <div class="info-box">
+                <p><strong>💡 Info:</strong> Scanner will fetch all message IDs from your source channels. This may take time for large channels.</p>
+            </div>
+
+            <div class="log-container" id="scannerLog">
+                Scanner ready... Click "Scan All Posts" to begin.
+            </div>
+        </div>
+
+        <div id="scheduler" class="tab-content">
+            <div class="schedule-form">
+                <h3>📅 Schedule Posts</h3>
+                
+                <div class="form-group">
+                    <label>Message IDs:</label>
+                    <input type="text" class="form-control" id="postIdsInput" placeholder="1,2,3,4,5">
+                    <small style="color: #64748b;">Separate multiple IDs with commas</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Number of Time Slots:</label>
+                    <input type="number" class="form-control" id="timeSlotsCount" min="1" max="20" value="3" onchange="createTimeSlots()">
+                </div>
+
+                <div id="timeSlotsContainer" style="margin-bottom: 20px;"></div>
+
+                <div style="margin-bottom: 20px;">
+                    <div class="server-time-display">
+                        <h4>Server Time (UTC+2)</h4>
+                        <div class="current-time" id="serverTime">--:--:--</div>
+                        <div class="current-date" id="serverDate">--/--/----</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Select Accounts & Channels:</label>
+                    <div style="background: rgba(99, 102, 241, 0.05); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+                        <input type="checkbox" id="selectAllChannels" onchange="toggleAllChannels()" style="margin-right: 8px;">
+                        <label for="selectAllChannels" style="cursor: pointer; margin: 0;"><strong>Select All Channels</strong></label>
+                    </div>
+                    <div class="target-channels" id="accountSelection" style="max-height: 300px; overflow-y: auto;">
+                        <p style="text-align: center; color: #94a3b8;">Connect accounts to see available channels</p>
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" onclick="createSchedule()">✨ Create Schedule</button>
+                <button class="btn btn-success" onclick="startScheduler()">▶️ Start Scheduler</button>
+            </div>
+
+            <table class="accounts-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Message IDs</th>
+                        <th>Distribution</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="scheduledPostsTableBody"></tbody>
+            </table>
+        </div>
+
+        <div id="logs" class="tab-content">
+            <div style="margin-bottom: 20px;">
+                <button class="btn btn-warning" onclick="clearLogs()">🧹 Clear Logs</button>
+            </div>
+            <div class="log-container" id="systemLog">
+                System ready... Logs will appear here.
+            </div>
+        </div>
+    </div>
+
+    <div id="addAccountModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeAddAccountModal()">&times;</span>
+            <div class="modal-header">
+                <h2>➕ Add New Account</h2>
+                <p>Enter your Telegram API credentials</p>
+            </div>
+
+            <div class="form-group">
+                <label>API ID:</label>
+                <input type="text" class="form-control" id="apiId" placeholder="Enter API ID">
+            </div>
+
+            <div class="form-group">
+                <label>API Hash:</label>
+                <input type="text" class="form-control" id="apiHash" placeholder="Enter API Hash">
+            </div>
+
+            <div class="form-group">
+                <label>Account Name:</label>
+                <input type="text" class="form-control" id="accountName" placeholder="Nickname (optional)">
+            </div>
+
+            <div class="form-group">
+                <label>Phone Number:</label>
+                <input type="text" class="form-control" id="phoneNumber" placeholder="+1234567890">
+            </div>
+
+            <div class="form-group">
+                <label>Source Channel ID:</label>
+                <input type="text" class="form-control" id="sourceChannel" placeholder="Enter source channel ID">
+            </div>
+
+            <div class="form-group">
+                <label>Target Channel IDs:</label>
+                <div class="target-channels" id="targetChannels"></div>
+                <div style="display: flex; gap: 10px;">
+                    <input type="text" class="form-control" id="newChannelInput" placeholder="Enter channel ID" style="flex: 1;">
+                    <button class="btn btn-primary" onclick="addTargetChannel()">Add</button>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-primary" onclick="addAccount()">Add Account</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="removeChannelsModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeRemoveChannelsModal()">&times;</span>
+            <div class="modal-header">
+                <h2>🗑️ Remove Channels</h2>
+                <p>Select channels to remove</p>
+            </div>
+            <div class="target-channels" id="removeChannelSelection" style="max-height: 400px; overflow-y: auto;">
+                <p style="text-align: center; color: #94a3b8;">No channels available</p>
+            </div>
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-danger" onclick="removeSelectedChannels()">Remove Selected</button>
+                <button class="btn btn-warning" onclick="closeRemoveChannelsModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scannedIdsModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <span class="close" onclick="closeScannedIdsModal()">&times;</span>
+            <div class="modal-header">
+                <h2>📋 Scanned Message IDs</h2>
+                <p>Select IDs to send to scheduler</p>
+            </div>
+            
+            <div style="margin-bottom: 15px; padding: 12px; background: rgba(99, 102, 241, 0.05); border-radius: 8px;">
+                <input type="checkbox" id="selectAllIds" onchange="toggleAllIds()" style="margin-right: 8px;">
+                <label for="selectAllIds" style="cursor: pointer; margin: 0; font-weight: 600;">Select All IDs</label>
+            </div>
+
+            <div id="scannedIdsContainer" class="id-selection-grid">
+                <p style="text-align: center; color: #94a3b8; grid-column: 1 / -1;">No IDs scanned yet. Run scanner first.</p>
+            </div>
+
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-success" onclick="sendIdsToScheduler()">📤 Send to Scheduler</button>
+                <button class="btn btn-warning" onclick="closeScannedIdsModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="authModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="authTitle">🔐 Authentication</h2>
+                <p id="authSubtitle">Enter verification code</p>
+            </div>
+            <div class="form-group">
+                <label id="authLabel">Verification Code:</label>
+                <input type="text" class="form-control" id="authInput" placeholder="Enter code" style="text-align: center; font-size: 18px; letter-spacing: 2px;">
+            </div>
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-primary" onclick="submitAuth()">Submit</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let targetChannels = [];
+        let currentAuthPhone = '';
+        let currentAuthStep = '';
+        let connectionInProgress = false;
+        let scannedIdsData = {};
+
+        function updateServerTime() {
+            fetch('/api/server-time')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('serverTime').textContent = data.time;
+                    document.getElementById('serverDate').textContent = data.formatted_date;
+                })
+                .catch(() => {});
+        }
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            setTimeout(() => notification.classList.add('show'), 100);
+            setTimeout(() => {
+                notification.classList.remove('show');
+                setTimeout(() => document.body.removeChild(notification), 400);
+            }, 4000);
+        }
+
+        function showAddAccountModal() {
+            document.getElementById('addAccountModal').classList.add('show');
+        }
+
+        function closeAddAccountModal() {
+            document.getElementById('addAccountModal').classList.remove('show');
+            setTimeout(() => {
+                document.getElementById('apiId').value = '';
+                document.getElementById('apiHash').value = '';
+                document.getElementById('accountName').value = '';
+                document.getElementById('phoneNumber').value = '';
+                document.getElementById('sourceChannel').value = '';
+                targetChannels = [];
+                updateTargetChannelsDisplay();
+            }, 300);
+        }
+
+        function addTargetChannel() {
+            const input = document.getElementById('newChannelInput');
+            const channel = input.value.trim();
+            if (!channel || !/^-?\d+$/.test(channel)) {
+                showNotification('Enter valid channel ID!', 'error');
+                return;
+            }
+            if (targetChannels.includes(channel)) {
+                showNotification('Channel already added!', 'error');
+                return;
+            }
+            targetChannels.push(channel);
+            input.value = '';
+            updateTargetChannelsDisplay();
+        }
+
+        function updateTargetChannelsDisplay() {
+            const container = document.getElementById('targetChannels');
+            container.innerHTML = '';
+            targetChannels.forEach(channel => {
+                const tag = document.createElement('div');
+                tag.className = 'channel-tag';
+                tag.innerHTML = `${channel} <span class="remove" onclick="removeTargetChannel('${channel}')">&times;</span>`;
+                container.appendChild(tag);
+            });
+        }
+
+        function removeTargetChannel(channel) {
+            targetChannels = targetChannels.filter(c => c !== channel);
+            updateTargetChannelsDisplay();
+        }
+
+        function showRemoveChannelsModal() {
+            loadAccountsForChannelRemoval();
+            document.getElementById('removeChannelsModal').classList.add('show');
+        }
+
+        function closeRemoveChannelsModal() {
+            document.getElementById('removeChannelsModal').classList.remove('show');
+        }
+
+        function loadAccountsForChannelRemoval() {
+            fetch('/api/accounts')
+                .then(response => response.json())
+                .then(data => updateRemoveChannelSelection(data.accounts))
+                .catch(error => showNotification('Error: ' + error.message, 'error'));
+        }
+
+        function updateRemoveChannelSelection(accounts) {
+            const container = document.getElementById('removeChannelSelection');
+            container.innerHTML = '';
+            if (accounts.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #94a3b8;">No accounts available</p>';
+                return;
+            }
+            accounts.forEach(account => {
+                if (account.target_channels.length === 0) return;
+                const accountDiv = document.createElement('div');
+                accountDiv.style.cssText = 'margin-bottom: 15px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px;';
+                accountDiv.innerHTML = `<h4 style="margin-bottom: 10px; color: #1e293b;">${account.phone}</h4>`;
+                const checkboxesDiv = document.createElement('div');
+                checkboxesDiv.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;';
+                account.target_channels.forEach(channel => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 6px; cursor: pointer;';
+                    label.innerHTML = `<input type="checkbox" class="remove-channel-checkbox" value="${account.phone}_${channel}"> ${channel}`;
+                    checkboxesDiv.appendChild(label);
+                });
+                accountDiv.appendChild(checkboxesDiv);
+                container.appendChild(accountDiv);
+            });
+        }
+
+        function removeSelectedChannels() {
+            const checkboxes = document.querySelectorAll('.remove-channel-checkbox:checked');
+            if (checkboxes.length === 0) {
+                showNotification('No channels selected!', 'error');
+                return;
+            }
+            const selectedChannels = {};
+            checkboxes.forEach(checkbox => {
+                const [phone, channel] = checkbox.value.split('_');
+                if (!selectedChannels[phone]) selectedChannels[phone] = [];
+                selectedChannels[phone].push(channel);
+            });
+            if (!confirm(`Remove ${checkboxes.length} channels?`)) return;
+            fetch('/api/channels/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channels: selectedChannels })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    closeRemoveChannelsModal();
+                    loadAccounts();
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            })
+            .catch(error => showNotification('Error: ' + error.message, 'error'));
+        }
+
+        function toggleAllChannels() {
+            const selectAll = document.getElementById('selectAllChannels').checked;
+            document.querySelectorAll('.channel-checkbox').forEach(cb => cb.checked = selectAll);
+        }
+
+        function showScannedIdsModal() {
+            loadScannedIds();
+            document.getElementById('scannedIdsModal').classList.add('show');
+        }
+
+        function closeScannedIdsModal() {
+            document.getElementById('scannedIdsModal').classList.remove('show');
+        }
+
+        function loadScannedIds() {
+            fetch('/api/scan/ids')
+                .then(response => response.json())
+                .then(data => {
+                    scannedIdsData = data;
+                    displayScannedIds(data);
+                })
+                .catch(error => showNotification('Error: ' + error.message, 'error'));
+        }
+
+        function displayScannedIds(data) {
+            const container = document.getElementById('scannedIdsContainer');
+            container.innerHTML = '';
+            
+            let hasIds = false;
+            for (const phone in data) {
+                if (data[phone] && data[phone].length > 0) {
+                    hasIds = true;
+                    const phoneHeader = document.createElement('div');
+                    phoneHeader.style.cssText = 'grid-column: 1 / -1; font-weight: 700; color: #1e293b; margin-top: 10px; padding: 8px; background: white; border-radius: 6px;';
+                    phoneHeader.textContent = `📱 ${phone}`;
+                    container.appendChild(phoneHeader);
+                    
+                    data[phone].forEach(id => {
+                        const item = document.createElement('div');
+                        item.className = 'id-checkbox-item';
+                        item.innerHTML = `
+                            <input type="checkbox" class="scanned-id-checkbox" value="${id}" id="id_${phone}_${id}">
+                            <label for="id_${phone}_${id}">${id}</label>
+                        `;
+                        container.appendChild(item);
+                    });
+                }
+            }
+            
+            if (!hasIds) {
+                container.innerHTML = '<p style="text-align: center; color: #94a3b8; grid-column: 1 / -1;">No IDs scanned yet. Run scanner first.</p>';
+            }
+        }
+
+        function toggleAllIds() {
+            const selectAll = document.getElementById('selectAllIds').checked;
+            document.querySelectorAll('.scanned-id-checkbox').forEach(cb => cb.checked = selectAll);
+        }
+
+        function sendIdsToScheduler() {
+            const checkedBoxes = document.querySelectorAll('.scanned-id-checkbox:checked');
+            if (checkedBoxes.length === 0) {
+                showNotification('Select at least one ID!', 'error');
+                return;
+            }
+            
+            const selectedIds = Array.from(checkedBoxes).map(cb => cb.value);
+            const idsString = selectedIds.join(',');
+            
+            document.getElementById('postIdsInput').value = idsString;
+            
+            closeScannedIdsModal();
+            showTab('scheduler');
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab')[2].classList.add('active');
+            
+            showNotification(`${selectedIds.length} IDs transferred to scheduler!`, 'success');
+        }
+
+        async function addAccount() {
+            const apiId = document.getElementById('apiId').value.trim();
+            const apiHash = document.getElementById('apiHash').value.trim();
+            const accountName = document.getElementById('accountName').value.trim();
+            const phone = document.getElementById('phoneNumber').value.trim();
+            const sourceChannel = document.getElementById('sourceChannel').value.trim();
+            
+            if (!apiId || !apiHash || !phone || !sourceChannel) {
+                showNotification('Fill all required fields!', 'error');
+                return;
+            }
+            if (targetChannels.length === 0) {
+                showNotification('Add at least one target channel!', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/accounts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_id: apiId,
+                        api_hash: apiHash,
+                        account_name: accountName,
+                        phone: phone,
+                        source_channel: sourceChannel,
+                        target_channels: targetChannels
+                    })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    closeAddAccountModal();
+                    loadAccounts();
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function removeAccount(phone) {
+            if (!confirm(`Remove account ${phone}?`)) return;
+            try {
+                const response = await fetch(`/api/accounts/${encodeURIComponent(phone)}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    loadAccounts();
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function connectAllAccounts() {
+            if (connectionInProgress) {
+                showNotification('Connection already in progress!', 'error');
+                return;
+            }
+            try {
+                const response = await fetch('/api/connect', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    connectionInProgress = true;
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('connectionProgress').style.display = 'block';
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function disconnectAllAccounts() {
+            try {
+                const response = await fetch('/api/disconnect', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    connectionInProgress = false;
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('connectionProgress').style.display = 'none';
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function scanAllPosts() {
+            try {
+                const response = await fetch('/api/scan/posts', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function clearScanner() {
+            try {
+                const response = await fetch('/api/scan/clear', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) showNotification(result.message, 'success');
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function clearLogs() {
+            try {
+                const response = await fetch('/api/logs/clear', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) showNotification(result.message, 'success');
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        function createTimeSlots() {
+            const count = parseInt(document.getElementById('timeSlotsCount').value) || 1;
+            const container = document.getElementById('timeSlotsContainer');
+            container.innerHTML = '';
+            for (let i = 1; i <= count; i++) {
+                const defaultDate = new Date(Date.now() + (i * 60 * 60 * 1000));
+                const dateStr = defaultDate.toISOString().split('T')[0];
+                const hour = defaultDate.getHours();
+                const minute = defaultDate.getMinutes();
+                const slotDiv = document.createElement('div');
+                slotDiv.className = 'time-slot';
+                slotDiv.innerHTML = `
+                    <div style="font-weight: 700; margin-bottom: 12px; color: #1e293b;">⏰ Time Slot ${i}</div>
+                    <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px;">
+                        <div class="form-group">
+                            <label>Date:</label>
+                            <input type="date" class="form-control time-slot-date" value="${dateStr}">
+                        </div>
+                        <div class="form-group">
+                            <label>Hour:</label>
+                            <input type="number" class="form-control time-slot-hour" min="0" max="23" value="${hour}">
+                        </div>
+                        <div class="form-group">
+                            <label>Minute:</label>
+                            <input type="number" class="form-control time-slot-minute" min="0" max="59" value="${minute}">
+                        </div>
+                    </div>
+                `;
+                container.appendChild(slotDiv);
+            }
+        }
+
+        async function createSchedule() {
+            const postIds = document.getElementById('postIdsInput').value.trim();
+            if (!postIds) {
+                showNotification('Enter post IDs!', 'error');
+                return;
+            }
+            const timeSlots = [];
+            document.querySelectorAll('.time-slot').forEach((slot, index) => {
+                const date = slot.querySelector('.time-slot-date').value;
+                const hour = slot.querySelector('.time-slot-hour').value;
+                const minute = slot.querySelector('.time-slot-minute').value;
+                if (date) {
+                    timeSlots.push({
+                        slot: index + 1,
+                        datetime: `${date}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+                    });
+                }
+            });
+            if (timeSlots.length === 0) {
+                showNotification('Create at least one time slot!', 'error');
+                return;
+            }
+            const selectedChannels = {};
+            document.querySelectorAll('.channel-checkbox:checked').forEach(cb => {
+                const [phone, channel] = cb.value.split('_');
+                if (!selectedChannels[phone]) selectedChannels[phone] = [];
+                selectedChannels[phone].push(channel);
+            });
+            if (Object.keys(selectedChannels).length === 0) {
+                showNotification('Select at least one channel!', 'error');
+                return;
+            }
+            try {
+                const response = await fetch('/api/scheduled', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        post_ids: postIds,
+                        time_slots: timeSlots,
+                        channels: selectedChannels
+                    })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    document.getElementById('postIdsInput').value = '';
+                    document.querySelectorAll('.channel-checkbox').forEach(cb => cb.checked = false);
+                    document.getElementById('selectAllChannels').checked = false;
+                    loadScheduledPosts();
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function removeScheduledPost(postId) {
+            if (!confirm('Remove this scheduled post?')) return;
+            try {
+                const response = await fetch(`/api/scheduled/${postId}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    loadScheduledPosts();
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function startScheduler() {
+            try {
+                const response = await fetch('/api/scheduler/start', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        function showAuthModal(phone, step) {
+            currentAuthPhone = phone;
+            currentAuthStep = step;
+            const modal = document.getElementById('authModal');
+            const title = document.getElementById('authTitle');
+            const subtitle = document.getElementById('authSubtitle');
+            const label = document.getElementById('authLabel');
+            const input = document.getElementById('authInput');
+            
+            if (step === 'code') {
+                title.textContent = '📱 Verification Code';
+                subtitle.textContent = `Enter code for ${phone}`;
+                label.textContent = 'Verification Code:';
+                input.placeholder = 'Enter 5-digit code';
+                input.type = 'text';
+            } else if (step === 'password') {
+                title.textContent = '🔐 2FA Password';
+                subtitle.textContent = `Enter 2FA for ${phone}`;
+                label.textContent = '2FA Password:';
+                input.placeholder = 'Enter password';
+                input.type = 'password';
+            }
+            input.value = '';
+            modal.classList.add('show');
+            setTimeout(() => input.focus(), 300);
+        }
+
+        function closeAuthModal() {
+            document.getElementById('authModal').classList.remove('show');
+        }
+
+        async function submitAuth() {
+            const input = document.getElementById('authInput');
+            const value = input.value.trim();
+            if (!value) {
+                showNotification('Enter the required value!', 'error');
+                return;
+            }
+            try {
+                const endpoint = currentAuthStep === 'code' ? '/api/auth/code' : '/api/auth/password';
+                const field = currentAuthStep === 'code' ? 'code' : 'password';
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone: currentAuthPhone, [field]: value })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                } else {
+                    showNotification(result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function loadAccounts() {
+            try {
+                const response = await fetch('/api/accounts');
+                const data = await response.json();
+                updateAccountsTable(data.accounts);
+                document.getElementById('totalAccounts').textContent = data.total_accounts;
+                document.getElementById('connectedAccounts').textContent = data.connected_accounts;
+                updateAccountSelection(data.accounts);
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function loadScheduledPosts() {
+            try {
+                const response = await fetch('/api/scheduled');
+                const posts = await response.json();
+                updateScheduledPostsTable(posts);
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'error');
+            }
+        }
+
+        function updateAccountsTable(accounts) {
+            const tbody = document.getElementById('accountsTableBody');
+            tbody.innerHTML = '';
+            accounts.forEach(account => {
+                const statusClass = account.status === 'Connected' ? 'status-connected' : 
+                                  account.status.includes('Error') ? 'status-error' : 'status-waiting';
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td style="max-width: 120px; overflow-y: auto; max-height: 100px;">
+                        ${account.target_channels.map(ch => `<label style="display: block; margin: 2px 0;"><input type="checkbox" class="account-channel-checkbox" value="${account.phone}_${ch}"> ${ch}</label>`).join('')}
+                    </td>
+                    <td>${account.account_name !== account.phone ? `<strong>${account.account_name}</strong><br><small>${account.phone}</small>` : account.phone}</td>
+                    <td>${account.source_channel}</td>
+                    <td>${account.target_channels.slice(0, 2).join(', ')}${account.target_channels.length > 2 ? `... (+${account.target_channels.length - 2})` : ''}</td>
+                    <td><span class="status-badge ${statusClass}">${account.status}</span></td>
+                    <td><button class="btn btn-danger" onclick="removeAccount('${account.phone}')">Remove</button></td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function updateAccountSelection(accounts) {
+            const container = document.getElementById('accountSelection');
+            container.innerHTML = '';
+            if (accounts.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #94a3b8;">No accounts available</p>';
+                return;
+            }
+            accounts.forEach(account => {
+                const accountDiv = document.createElement('div');
+                accountDiv.style.cssText = 'margin-bottom: 15px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px;';
+                accountDiv.innerHTML = `<h4 style="margin-bottom: 10px; color: #1e293b;">${account.account_name !== account.phone ? account.account_name : account.phone}</h4>`;
+                const checkboxesDiv = document.createElement('div');
+                checkboxesDiv.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;';
+                account.target_channels.forEach(channel => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 6px; cursor: pointer;';
+                    label.innerHTML = `<input type="checkbox" class="channel-checkbox" value="${account.phone}_${channel}"> ${channel}`;
+                    checkboxesDiv.appendChild(label);
+                });
+                accountDiv.appendChild(checkboxesDiv);
+                container.appendChild(accountDiv);
+            });
+        }
+
+        function updateScheduledPostsTable(posts) {
+            const tbody = document.getElementById('scheduledPostsTableBody');
+            tbody.innerHTML = '';
+            posts.forEach(post => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${post.time}</td>
+                    <td>${post.post}</td>
+                    <td>${post.accounts}</td>
+                    <td><span class="status-badge">${post.status}</span></td>
+                    <td><button class="btn btn-danger" onclick="removeScheduledPost(${post.id})">Remove</button></td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        socket.on('accounts_updated', (data) => {
+            updateAccountsTable(data.accounts);
+            document.getElementById('totalAccounts').textContent = data.total_accounts;
+            document.getElementById('connectedAccounts').textContent = data.connected_accounts;
+            updateAccountSelection(data.accounts);
+        });
+
+        socket.on('connection_progress', (data) => {
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            const progressContainer = document.getElementById('connectionProgress');
+            const percentage = (data.current / data.total) * 100;
+            progressFill.style.width = percentage + '%';
+            progressText.textContent = data.status;
+            if (data.paused) {
+                progressContainer.classList.add('paused');
+                progressFill.classList.add('paused');
+            } else {
+                progressContainer.classList.remove('paused');
+                progressFill.classList.remove('paused');
+            }
+            if (data.finished) {
+                connectionInProgress = false;
+                document.getElementById('connectBtn').disabled = false;
+                setTimeout(() => document.getElementById('connectionProgress').style.display = 'none', 5000);
+            }
+        });
+
+        socket.on('auth_required', (data) => showAuthModal(data.phone, data.step));
+        socket.on('auth_success', (data) => {
+            closeAuthModal();
+            showNotification(`Success for ${data.phone}`, 'success');
+        });
+        socket.on('auth_error', (data) => {
+            closeAuthModal();
+            showNotification(`Error for ${data.phone}`, 'error');
+        });
+
+        socket.on('log_message', (data) => {
+            const log = document.getElementById('systemLog');
+            if (log.textContent === 'System ready... Logs will appear here.') log.textContent = '';
+            log.textContent += data.message + '\n';
+            log.scrollTop = log.scrollHeight;
+        });
+
+        socket.on('scan_message', (data) => {
+            const log = document.getElementById('scannerLog');
+            if (log.textContent === 'Scanner ready... Click "Scan All Posts" to begin.') log.textContent = '';
+            log.textContent += data.message + '\n';
+            log.scrollTop = log.scrollHeight;
+        });
+
+        socket.on('scanned_ids_updated', (data) => {
+            scannedIdsData = data.ids;
+        });
+
+        socket.on('log_history', (data) => {
+            document.getElementById('systemLog').textContent = data.history;
+        });
+
+        socket.on('scan_history', (data) => {
+            document.getElementById('scannerLog').textContent = data.history;
+        });
+
+        socket.on('clear_logs', () => {
+            document.getElementById('systemLog').textContent = 'Logs cleared...\n';
+        });
+
+        socket.on('clear_scan', () => {
+            document.getElementById('scannerLog').textContent = 'Scanner cleared...\n';
+        });
+
+        socket.on('scheduler_status', (data) => {
+            const status = document.getElementById('schedulerStatus');
+            status.textContent = data.running ? 'Running ▶️' : 'Stopped ⏸️';
+            status.style.color = data.running ? '#10b981' : '#ef4444';
+        });
+
+        socket.on('scheduled_posts_updated', (posts) => updateScheduledPostsTable(posts));
+
+        document.getElementById('newChannelInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addTargetChannel();
+            }
+        });
+
+        document.getElementById('authInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitAuth();
+            }
+        });
+
+        window.onclick = (event) => {
+            if (event.target.classList.contains('modal')) {
+                event.target.classList.remove('show');
+            }
+        };
+
+        updateServerTime();
+        setInterval(updateServerTime, 1000);
+        createTimeSlots();
+        loadAccounts();
+        loadScheduledPosts();
+    </script>
+</body>
+</html>
