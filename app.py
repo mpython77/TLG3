@@ -926,7 +926,16 @@ class WebTelegramForwarder:
                 self.scanned_ids[phone] = []
             
             message_count = 0
+            service_count = 0
             async for message in client.iter_messages(source_entity, limit=None):
+                if hasattr(message, '__class__') and 'MessageService' in str(message.__class__):
+                    service_count += 1
+                    continue
+                
+                if not message.text and not message.media:
+                    service_count += 1
+                    continue
+                
                 message_count += 1
                 self.scanned_ids[phone].append(str(message.id))
                 self.scan_message(f"Message ID: {message.id}", phone, channel_id)
@@ -934,8 +943,8 @@ class WebTelegramForwarder:
                 if message_count % 100 == 0:
                     await asyncio.sleep(0.1)
             
-            self.scan_message(f"Channel scan completed: {message_count} messages found", phone, channel_id)
-            self.log_message(f"Channel scan completed: {message_count} messages", phone)
+            self.scan_message(f"Scan completed: {message_count} content messages, {service_count} service messages skipped", phone, channel_id)
+            self.log_message(f"Channel scan: {message_count} messages ({service_count} skipped)", phone)
             
         except Exception as e:
             error_msg = str(e)
@@ -1243,6 +1252,13 @@ class WebTelegramForwarder:
                 message = await client.get_messages(source_entity, ids=message_id)
                 if not message:
                     raise ValueError(f"Message {message_id} not found in source channel")
+                
+                if hasattr(message, '__class__') and 'MessageService' in str(message.__class__):
+                    raise ValueError(f"Message {message_id} is a service message and cannot be forwarded")
+                
+                if not message.text and not message.media:
+                    raise ValueError(f"Message {message_id} is empty or service message")
+                    
             except Exception as e:
                 raise ValueError(f"Cannot get message {message_id}: {str(e)}")
             
