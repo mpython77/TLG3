@@ -114,8 +114,8 @@ class WebTelegramForwarder:
         self.clients = {}
         self.running = False
         
-        self.min_delay = 7
-        self.max_delay = 12
+        self.min_delay = 15
+        self.max_delay = 25
         self.last_forward_time = {}
         
         self.connection_queue = []
@@ -1179,15 +1179,22 @@ class WebTelegramForwarder:
                     
                     try:
                         delay = random.uniform(self.min_delay, self.max_delay)
-                        self.log_message(f"Waiting {delay:.1f} seconds before sending to channel {channel}")
+                        self.log_message(f"Waiting {delay:.1f} seconds before sending to channel {channel}", phone)
                         await asyncio.sleep(delay)
                         
                         await self.send_single_scheduled_post(client, post_id, channel, phone)
                         success_count += 1
-                        self.log_message(f"Successfully sent post {post_id} to channel {channel} via {phone}")
+                        self.log_message(f"✓ Successfully sent post {post_id} to channel {channel}", phone)
                         
+                    except FloodWaitError as e:
+                        self.log_message(f"✗ FloodWait {e.seconds}s for channel {channel} - Try increasing delay", phone)
+                    except ChannelPrivateError:
+                        self.log_message(f"✗ Channel {channel} is private or bot not member", phone)
+                    except UserBannedInChannelError:
+                        self.log_message(f"✗ User banned in channel {channel}", phone)
                     except Exception as e:
-                        self.log_message(f"Failed to send post {post_id} to channel {channel} via {phone}: {str(e)}")
+                        error_type = type(e).__name__
+                        self.log_message(f"✗ Failed channel {channel}: {error_type} - {str(e)}", phone)
             
             if success_count == total_count and total_count > 0:
                 post['status'] = 'Sent'
@@ -1224,26 +1231,20 @@ class WebTelegramForwarder:
             
             try:
                 source_entity = await self.get_entity_safe(client, source_channel_id, phone)
-                self.log_message(f"Source entity loaded: {source_entity.title if hasattr(source_entity, 'title') else 'Channel'}", phone)
             except Exception as e:
-                self.log_message(f"Error loading source entity {source_channel_id}: {str(e)}", phone)
-                raise
+                raise ValueError(f"Source channel {source_channel_id} not accessible: {str(e)}")
             
             try:
                 target_entity = await self.get_entity_safe(client, target_channel_id, phone)
-                self.log_message(f"Target entity loaded: {target_entity.title if hasattr(target_entity, 'title') else 'Channel'}", phone)
             except Exception as e:
-                self.log_message(f"Error loading target entity {target_channel_id}: {str(e)}", phone)
-                raise
+                raise ValueError(f"Target channel {target_channel_id} not accessible: {str(e)}")
             
             try:
                 message = await client.get_messages(source_entity, ids=message_id)
                 if not message:
                     raise ValueError(f"Message {message_id} not found in source channel")
-                self.log_message(f"Message {message_id} retrieved from source", phone)
             except Exception as e:
-                self.log_message(f"Error retrieving message {message_id}: {str(e)}", phone)
-                raise
+                raise ValueError(f"Cannot get message {message_id}: {str(e)}")
             
             try:
                 await client.forward_messages(
@@ -1253,23 +1254,16 @@ class WebTelegramForwarder:
                     drop_author=True,
                     silent=True
                 )
-                self.log_message(f"Message forwarded successfully to {target_channel_id}", phone)
             except Exception as e:
-                self.log_message(f"Error forwarding message to {target_channel_id}: {str(e)}", phone)
-                raise
+                raise ValueError(f"Forward failed: {str(e)}")
             
         except FloodWaitError as e:
-            self.log_message(f"Flood wait for channel {target_channel}: {e.seconds}s", phone)
-            await asyncio.sleep(e.seconds)
             raise
         except ChannelPrivateError:
-            self.log_message(f"Channel {target_channel} is private or not accessible", phone)
             raise
         except UserBannedInChannelError:
-            self.log_message(f"User banned in channel {target_channel}", phone)
             raise
         except Exception as e:
-            self.log_message(f"Forward error to channel {target_channel}: {str(e)}", phone)
             raise
     
     def disconnect_all(self):
