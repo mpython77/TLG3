@@ -1,5 +1,5 @@
 import asyncio
-import json 
+import json
 import os
 import threading
 import time
@@ -254,30 +254,31 @@ class WebTelegramForwarder:
             if cache_key in self.entity_cache:
                 return self.entity_cache[cache_key]
             
+            original_id = entity_id
             entity_id = int(entity_id)
             
-            try:
-                entity = await client.get_entity(entity_id)
-                self.entity_cache[cache_key] = entity
-                return entity
-            except Exception as e:
-                if "Could not find the input entity" in str(e) or "No user has" in str(e):
-                    try:
-                        entity = await client.get_entity(PeerChannel(-entity_id - 1000000000000))
-                        self.entity_cache[cache_key] = entity
-                        return entity
-                    except:
-                        pass
-                    
-                    try:
-                        entity = await client.get_entity(PeerChat(-entity_id))
-                        self.entity_cache[cache_key] = entity
-                        return entity
-                    except:
-                        pass
-                
-                self.log_message(f"Entity not found or access denied: {entity_id}", phone)
-                raise
+            formats_to_try = []
+            
+            if entity_id > 0:
+                formats_to_try.append(-1000000000000 - entity_id)
+                formats_to_try.append(-100000000000 - entity_id)
+                formats_to_try.append(-entity_id)
+            else:
+                formats_to_try.append(entity_id)
+                formats_to_try.append(abs(entity_id))
+            
+            formats_to_try.append(entity_id)
+            
+            for fmt_id in formats_to_try:
+                try:
+                    entity = await client.get_entity(fmt_id)
+                    self.entity_cache[cache_key] = entity
+                    return entity
+                except:
+                    continue
+            
+            self.log_message(f"Entity not found with ID {original_id}. Tried formats: {formats_to_try}", phone)
+            raise ValueError(f"Could not find entity {original_id}")
                 
         except Exception as e:
             self.log_message(f"Error getting entity {entity_id}: {str(e)}", phone)
@@ -915,11 +916,11 @@ class WebTelegramForwarder:
     
     async def scan_channel_posts(self, account, client):
         try:
-            source_entity = await self.get_entity_safe(client, account['source_channel'], account['phone'])
+            channel_id = account['source_channel']
+            source_entity = await self.get_entity_safe(client, channel_id, account['phone'])
             phone = account['phone']
-            channel = account['source_channel']
             
-            self.scan_message(f"Scanning channel: {channel}", phone)
+            self.scan_message(f"Scanning channel: {channel_id}", phone)
             
             if phone not in self.scanned_ids:
                 self.scanned_ids[phone] = []
@@ -928,17 +929,23 @@ class WebTelegramForwarder:
             async for message in client.iter_messages(source_entity, limit=None):
                 message_count += 1
                 self.scanned_ids[phone].append(str(message.id))
-                self.scan_message(f"Message ID: {message.id}", phone, channel)
+                self.scan_message(f"Message ID: {message.id}", phone, channel_id)
                 
                 if message_count % 100 == 0:
                     await asyncio.sleep(0.1)
             
-            self.scan_message(f"Channel scan completed: {message_count} messages found", phone, channel)
+            self.scan_message(f"Channel scan completed: {message_count} messages found", phone, channel_id)
             self.log_message(f"Channel scan completed: {message_count} messages", phone)
             
         except Exception as e:
-            self.scan_message(f"Channel scan error: {str(e)}", account['phone'])
-            self.log_message(f"Channel scan error: {str(e)}", account['phone'])
+            error_msg = str(e)
+            self.scan_message(f"Channel scan error: {error_msg}", account['phone'])
+            self.log_message(f"Channel scan error: {error_msg}", account['phone'])
+            
+            if "Could not find the input entity" in error_msg:
+                channel_id = account['source_channel']
+                self.log_message(f"HINT: If channel ID is {channel_id}, try: -100{channel_id}", account['phone'])
+                self.scan_message(f"HINT: Try formatting channel ID as: -100{channel_id}", account['phone'])
     
     def add_scheduled_posts(self, post_ids, time_slots, selected_channels):
         if not post_ids:
