@@ -955,7 +955,7 @@ class WebTelegramForwarder:
                 channel_id = account['source_channel']
                 self.log_message(f"HINT: If channel ID is {channel_id}, try: -100{channel_id}", account['phone'])
                 self.scan_message(f"HINT: Try formatting channel ID as: -100{channel_id}", account['phone'])
-      
+    
     def add_scheduled_posts(self, post_ids, time_slots, selected_channels):
         if not post_ids:
             return {"success": False, "error": "Enter at least one message ID!"}
@@ -983,6 +983,10 @@ class WebTelegramForwarder:
             for channel in channels:
                 all_channels.append({'phone': phone, 'channel': channel})
         
+        post_pool = post_ids_list.copy()
+        random.shuffle(post_pool)
+        post_index = 0
+        
         for i, time_slot in enumerate(time_slots):
             try:
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
@@ -1000,7 +1004,8 @@ class WebTelegramForwarder:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
                 
-                selected_post_id = random.choice(post_ids_list)
+                selected_post_id = post_pool[post_index % len(post_pool)]
+                post_index += 1
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
@@ -1038,7 +1043,7 @@ class WebTelegramForwarder:
             return {"success": True, "message": f"Created {len(created_posts)} scheduled posts!"}
         else:
             return {"success": False, "error": "No valid time slots created!"}
-        
+    
     def get_scheduled_posts_data(self):
         posts_data = []
         for post in self.scheduled_posts:
