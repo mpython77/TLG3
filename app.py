@@ -983,10 +983,6 @@ class WebTelegramForwarder:
             for channel in channels:
                 all_channels.append({'phone': phone, 'channel': channel})
         
-        post_pool = post_ids_list.copy()
-        random.shuffle(post_pool)
-        post_index = 0
-        
         for i, time_slot in enumerate(time_slots):
             try:
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
@@ -1000,12 +996,18 @@ class WebTelegramForwarder:
             
             channel_posts = {}
             
+            available_post_ids = post_ids_list.copy()
+            random.shuffle(available_post_ids)
+            
             for ch_info in all_channels:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
                 
-                selected_post_id = post_pool[post_index % len(post_pool)]
-                post_index += 1
+                if not available_post_ids:
+                    available_post_ids = post_ids_list.copy()
+                    random.shuffle(available_post_ids)
+                
+                selected_post_id = available_post_ids.pop(0)
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
