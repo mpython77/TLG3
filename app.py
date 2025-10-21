@@ -955,7 +955,7 @@ class WebTelegramForwarder:
                 channel_id = account['source_channel']
                 self.log_message(f"HINT: If channel ID is {channel_id}, try: -100{channel_id}", account['phone'])
                 self.scan_message(f"HINT: Try formatting channel ID as: -100{channel_id}", account['phone'])
-    
+      
     def add_scheduled_posts(self, post_ids, time_slots, selected_channels):
         if not post_ids:
             return {"success": False, "error": "Enter at least one message ID!"}
@@ -996,18 +996,11 @@ class WebTelegramForwarder:
             
             channel_posts = {}
             
-            available_post_ids = post_ids_list.copy()
-            random.shuffle(available_post_ids)
-            
             for ch_info in all_channels:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
                 
-                if len(available_post_ids) == 0:
-                    available_post_ids = post_ids_list.copy()
-                    random.shuffle(available_post_ids)
-                
-                selected_post_id = available_post_ids.pop(0)
+                selected_post_id = random.choice(post_ids_list)
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
@@ -1045,7 +1038,7 @@ class WebTelegramForwarder:
             return {"success": True, "message": f"Created {len(created_posts)} scheduled posts!"}
         else:
             return {"success": False, "error": "No valid time slots created!"}
-    
+        
     def get_scheduled_posts_data(self):
         posts_data = []
         for post in self.scheduled_posts:
@@ -1056,31 +1049,12 @@ class WebTelegramForwarder:
             for phone, channels in post['posts'].items():
                 for ch_info in channels:
                     post_ids_display.append(ch_info['post_id'])
-            
-            from collections import Counter
-            post_counts = Counter(post_ids_display)
-            
-            if len(post_counts) <= 5:
-                display_parts = []
-                for pid, count in sorted(post_counts.items()):
-                    if count > 1:
-                        display_parts.append(f"{pid}(x{count})")
-                    else:
-                        display_parts.append(pid)
-                post_display = ', '.join(display_parts)
-            else:
-                display_parts = []
-                for pid, count in sorted(list(post_counts.items())[:5]):
-                    if count > 1:
-                        display_parts.append(f"{pid}(x{count})")
-                    else:
-                        display_parts.append(pid)
-                post_display = ', '.join(display_parts) + '...'
+            unique_posts = list(set(post_ids_display))
             
             posts_data.append({
                 'id': post['id'],
                 'time': post['datetime'].strftime('%d.%m.%Y %H:%M'),
-                'post': post_display,
+                'post': ', '.join(unique_posts[:5]) + ('...' if len(unique_posts) > 5 else ''),
                 'accounts': accounts_info,
                 'status': post['status']
             })
