@@ -1003,7 +1003,7 @@ class WebTelegramForwarder:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
                 
-                if not available_post_ids:
+                if len(available_post_ids) == 0:
                     available_post_ids = post_ids_list.copy()
                     random.shuffle(available_post_ids)
                 
@@ -1056,12 +1056,31 @@ class WebTelegramForwarder:
             for phone, channels in post['posts'].items():
                 for ch_info in channels:
                     post_ids_display.append(ch_info['post_id'])
-            unique_posts = list(set(post_ids_display))
+            
+            from collections import Counter
+            post_counts = Counter(post_ids_display)
+            
+            if len(post_counts) <= 5:
+                display_parts = []
+                for pid, count in sorted(post_counts.items()):
+                    if count > 1:
+                        display_parts.append(f"{pid}(x{count})")
+                    else:
+                        display_parts.append(pid)
+                post_display = ', '.join(display_parts)
+            else:
+                display_parts = []
+                for pid, count in sorted(list(post_counts.items())[:5]):
+                    if count > 1:
+                        display_parts.append(f"{pid}(x{count})")
+                    else:
+                        display_parts.append(pid)
+                post_display = ', '.join(display_parts) + '...'
             
             posts_data.append({
                 'id': post['id'],
                 'time': post['datetime'].strftime('%d.%m.%Y %H:%M'),
-                'post': ', '.join(unique_posts[:5]) + ('...' if len(unique_posts) > 5 else ''),
+                'post': post_display,
                 'accounts': accounts_info,
                 'status': post['status']
             })
