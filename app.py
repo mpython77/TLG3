@@ -966,12 +966,15 @@ class WebTelegramForwarder:
         if not selected_channels:
             return {"success": False, "error": "Select at least one channel!"}
         
+        post_ids_list = [id.strip() for id in post_ids.split(',') if id.strip()]
         try:
-            post_ids_list = [id.strip() for id in post_ids.split(',')]
-            for post_id in post_ids_list:
-                int(post_id)
+            post_ids_list = [str(int(pid)) for pid in post_ids_list]
+            post_ids_list = list(set(post_ids_list))  # Remove duplicates if any
         except ValueError:
             return {"success": False, "error": "All message IDs must be valid numbers!"}
+        
+        if not post_ids_list:
+            return {"success": False, "error": "No valid message IDs provided!"}
         
         utc_plus_1 = timezone(timedelta(hours=2))
         current_time = datetime.now(utc_plus_1)
@@ -983,26 +986,39 @@ class WebTelegramForwarder:
             for channel in channels:
                 all_channels.append({'phone': phone, 'channel': channel})
         
-        post_pool = post_ids_list
+        num_channels = len(all_channels)
         
         for i, time_slot in enumerate(time_slots):
             try:
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
                 slot_datetime = slot_datetime.replace(tzinfo=utc_plus_1)
-            except:
+            except ValueError:
                 continue
                 
             time_diff = (slot_datetime - current_time).total_seconds()
             if time_diff < -60:
                 continue
             
-            channel_posts = {}
+            # Smart assignment of post IDs
+            if len(post_ids_list) >= num_channels:
+                assigned_ids = random.sample(post_ids_list, num_channels)
+            else:
+                num_full_sets = num_channels // len(post_ids_list)
+                remainder = num_channels % len(post_ids_list)
+                extended = post_ids_list * num_full_sets
+                if remainder > 0:
+                    extended += random.sample(post_ids_list, remainder)
+                assigned_ids = extended
             
+            random.shuffle(assigned_ids)
+            
+            channel_posts = {}
+            id_idx = 0
             for ch_info in all_channels:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
-                
-                selected_post_id = random.choice(post_pool)
+                selected_post_id = assigned_ids[id_idx]
+                id_idx += 1
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
@@ -1514,7 +1530,7 @@ def get_log_history():
 @app.route('/api/scan/history', methods=['GET'])
 @login_required
 def get_scan_history():
-    return jupytext({"history": forwarder.get_scan_history()})
+    return jsonify({"history": forwarder.get_scan_history()})
 
 @app.route('/health')
 def health():
