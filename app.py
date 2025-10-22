@@ -1066,12 +1066,13 @@ class WebTelegramForwarder:
             for phone, channels in post['posts'].items():
                 for ch_info in channels:
                     post_ids_display.append(ch_info['post_id'])
-            unique_posts = list(set(post_ids_display))
+            
+            post_ids_display.sort()
             
             posts_data.append({
                 'id': post['id'],
                 'time': post['datetime'].strftime('%d.%m.%Y %H:%M'),
-                'post': ', '.join(unique_posts[:5]) + ('...' if len(unique_posts) > 5 else ''),
+                'post': ', '.join(post_ids_display[:5]) + ('...' if len(post_ids_display) > 5 else ''),
                 'accounts': accounts_info,
                 'status': post['status']
             })
