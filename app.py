@@ -994,7 +994,6 @@ class WebTelegramForwarder:
             if time_diff < -60:
                 continue
             
-            shuffled_post_ids = random.sample(post_ids_list, len(post_ids_list))
             
             channel_posts = {}
             
@@ -1002,7 +1001,7 @@ class WebTelegramForwarder:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
                 
-                selected_post_id = shuffled_post_ids[idx % len(shuffled_post_ids)]
+                selected_post_id = random.choice(post_ids_list)
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
