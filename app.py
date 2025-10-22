@@ -1067,7 +1067,7 @@ class WebTelegramForwarder:
                 for ch_info in channels:
                     post_ids_display.append(ch_info['post_id'])
             
-            post_ids_display.sort()
+            #post_ids_display.sort()
             
             posts_data.append({
                 'id': post['id'],
