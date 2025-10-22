@@ -421,278 +421,718 @@ class WebTelegramForwarder:
                 return {
                     'auth_required': True,
                     'phone': phone,
-                    'step': auth_data['step'],
-                    'phone_code_hash': auth_data.get('phone_code_hash', '')
+                    'step': auth_data['step']
                 }
         return {'auth_required': False}
     
-    def submit_auth_code(self, phone, code):
-        if phone in self.pending_auth and self.pending_auth[phone]['step'] == 'code':
-            self.pending_auth[phone]['code'] = code
-            return {"success": True, "message": "Code received. Continuing connection..."}
-        return {"success": False, "error": "No pending auth for this phone"}
-    
-    def submit_auth_password(self, phone, password):
-        if phone in self.pending_auth and self.pending_auth[phone]['step'] == 'password':
-            self.pending_auth[phone]['password'] = password
-            return {"success": True, "message": "Password received. Continuing connection..."}
-        return {"success": False, "error": "No pending auth for this phone"}
-    
     def connect_all_accounts(self):
+        if not self.accounts:
+            return {"success": False, "error": "No accounts available!"}
+        
         if self.connection_in_progress:
-            return {"success": False, "error": "Connection already in progress!"}
+            return {"success": False, "error": "Connection process is already in progress!"}
         
-        self.connection_queue = [acc['phone'] for acc in self.accounts if acc['phone'] not in self.clients]
-        if not self.connection_queue:
-            return {"success": False, "error": "No accounts to connect or all connected!"}
+        if self.pending_auth:
+            return {"success": False, "error": "Please complete authentication for the current account first!"}
         
-        self.connection_in_progress = True
-        self.connection_paused = False
-        
-        threading.Thread(target=self.process_connection_queue, daemon=True).start()
-        
-        self.log_message(f"Starting connection for {len(self.connection_queue)} accounts")
-        return {"success": True, "message": f"Connecting {len(self.connection_queue)} accounts..."}
-    
-    def process_connection_queue(self):
-        while self.connection_queue and self.connection_in_progress and not self.connection_paused:
-            self.current_connecting_phone = self.connection_queue.pop(0)
-            self.log_message(f"Connecting {self.current_connecting_phone}...")
-            
-            account = next((acc for acc in self.accounts if acc['phone'] == self.current_connecting_phone), None)
-            if not account:
-                continue
+        if self.loop and not self.loop.is_closed():
+            self.connection_queue = [acc for acc in self.accounts]
+            self.current_connecting_phone = None
+            self.connection_in_progress = True
+            self.connection_paused = False
             
             try:
-                client = TelegramClient(
-                    account['session_file'],
-                    account['api_id'],
-                    account['api_hash'],
-                    connection_retries=5,
-                    retry_delay=5,
-                    timeout=15
-                )
-                
-                self.pending_auth[self.current_connecting_phone] = {'step': 'code'}
-                phone_code_hash = asyncio.run_coroutine_threadsafe(self.async_sign_in(client, account['phone']), self.loop).result()
-                
-                self.pending_auth[self.current_connecting_phone]['phone_code_hash'] = phone_code_hash
-                
-                timeout = 300
-                start_time = time.time()
-                while time.time() - start_time < timeout:
-                    if 'code' in self.pending_auth[self.current_connecting_phone]:
-                        code = self.pending_auth[self.current_connecting_phone]['code']
-                        del self.pending_auth[self.current_connecting_phone]['code']
-                        try:
-                            asyncio.run_coroutine_threadsafe(self.async_sign_in_code(client, code, phone_code_hash), self.loop).result()
-                            break
-                        except SessionPasswordNeededError:
-                            self.pending_auth[self.current_connecting_phone]['step'] = 'password'
-                            socketio.emit('auth_required', self.get_auth_status())
-                            password_timeout = 300
-                            password_start = time.time()
-                            while time.time() - password_start < password_timeout:
-                                if 'password' in self.pending_auth[self.current_connecting_phone]:
-                                    password = self.pending_auth[self.current_connecting_phone]['password']
-                                    del self.pending_auth[self.current_connecting_phone]['password']
-                                    asyncio.run_coroutine_threadsafe(self.async_sign_in_password(client, password), self.loop).result()
-                                    break
-                                time.sleep(1)
-                            if 'password' not in self.pending_auth[self.current_connecting_phone]:
-                                break
-                        except Exception as e:
-                            self.log_message(f"Connection error: {str(e)}", account['phone'])
-                            break
-                    time.sleep(1)
-                
-                if self.current_connecting_phone in self.pending_auth:
-                    del self.pending_auth[self.current_connecting_phone]
-                
-                self.clients[account['phone']] = client
-                account['status'] = 'Connected'
-                self.log_message("Connected successfully", account['phone'])
-                
-            except Exception as e:
-                self.log_message(f"Connection failed: {str(e)}", account['phone'])
-            
-            socketio.emit('accounts_updated', self.get_accounts_data())
-            time.sleep(2)
-        
-        self.connection_in_progress = False
-        self.current_connecting_phone = None
-        self.log_message("All connections completed")
-    
-    async def async_sign_in(self, client, phone):
-        await client.connect()
-        if not await client.is_user_authorized():
-            return await client.send_code_request(phone)
-    
-    async def async_sign_in_code(self, client, code, phone_code_hash):
-        await client.sign_in(client.phone, code, phone_code_hash=phone_code_hash)
-    
-    async def async_sign_in_password(self, client, password):
-        await client.sign_in(password=password)
-    
-    def scan_all_posts(self):
-        self.clear_scan_history()
-        self.scanned_ids = {}
-        
-        if not self.clients:
-            return {"success": False, "error": "No connected accounts!"}
-        
-        threading.Thread(target=self.perform_scan, daemon=True).start()
-        
-        return {"success": True, "message": "Scanning started..."}
-    
-    def perform_scan(self):
-        for phone, client in self.clients.items():
-            account = next(acc for acc in self.accounts if acc['phone'] == phone)
-            source_channel = account['source_channel']
-            try:
-                entity = asyncio.run_coroutine_threadsafe(self.get_entity_safe(client, source_channel, phone), self.loop).result()
-                
-                messages = asyncio.run_coroutine_threadsafe(client.get_messages(entity, limit=50), self.loop).result()
-                
-                post_ids = [msg.id for msg in messages if msg.id and not (hasattr(msg, '__class__') and 'MessageService' in str(msg.__class__)) and (msg.text or msg.media)]
-                
-                self.scanned_ids[phone] = post_ids
-                
-                self.scan_message(f"Found {len(post_ids)} valid posts", phone, source_channel)
-                
-            except Exception as e:
-                self.scan_message(f"Scan error: {str(e)}", phone, source_channel)
-        
-        socketio.emit('scan_complete', self.get_scanned_ids())
-    
-    def add_scheduled_posts(self, post_ids, time_slots, channels):
-        if not post_ids:
-            return {"success": False, "error": "No post IDs provided!"}
-        
-        if not time_slots:
-            return {"success": False, "error": "No time slots provided!"}
-        
-        if not channels:
-            return {"success": False, "error": "No channels selected!"}
-        
-        added_count = 0
-        post_ids = list(set(post_ids))  # Unique IDs
-        
-        utc_plus_1 = timezone(timedelta(hours=2))
-        
-        for time_slot_str in time_slots:
-            try:
-                dt = datetime.strptime(time_slot_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=utc_plus_1)
+                socketio.emit('connection_progress', {
+                    'current': 0,
+                    'total': len(self.accounts),
+                    'status': 'Starting sequential connection...'
+                })
             except:
-                continue
+                pass
             
-            if dt < datetime.now(utc_plus_1):
-                continue
-            
-            new_post = {
-                'id': len(self.scheduled_posts) + 1,
-                'datetime': dt,
-                'posts': {},
-                'status': 'Pending'
-            }
-            
-            total_channels = 0
-            
-            for phone, ch_list in channels.items():
-                if phone not in self.clients:
-                    continue
-                
-                new_post['posts'][phone] = []
-                
-                for ch in ch_list:
-                    if not ch.strip():
-                        continue
-                    
-                    # Fixed: Random selection for each channel independently
-                    selected_post_id = random.choice(post_ids)
-                    
-                    new_post['posts'][phone].append({
-                        'channel': ch.strip(),
-                        'post_id': selected_post_id
-                    })
-                    
-                    total_channels += 1
-            
-            if total_channels > 0:
-                self.scheduled_posts.append(new_post)
-                added_count += 1
-                self.log_message(f"Added scheduled post {new_post['id']} for {time_slot_str} - {len(new_post['posts'])} accounts, {total_channels} channels")
+            asyncio.run_coroutine_threadsafe(self.connect_accounts_sequentially(), self.loop)
+            return {"success": True, "message": "Sequential connection started!"}
+        else:
+            return {"success": False, "error": "Async loop not available!"}
+    
+    async def connect_accounts_sequentially(self):
+        connected_count = 0
+        failed_count = 0
         
-        self.scheduled_posts.sort(key=lambda x: x['datetime'] if isinstance(x['datetime'], datetime) else datetime.strptime(x['datetime'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=utc_plus_1))
+        self.log_message(f"Starting sequential connection for {len(self.connection_queue)} accounts")
+        
+        for index, account in enumerate(self.connection_queue):
+            if not self.connection_in_progress:
+                break
+                
+            phone = account['phone']
+            self.current_connecting_phone = phone
+            
+            self.log_message(f"Processing account {index + 1}/{len(self.connection_queue)}: {phone}")
+            
+            try:
+                socketio.emit('connection_progress', {
+                    'current': index + 1,
+                    'total': len(self.connection_queue),
+                    'status': f"Connecting {phone}..."
+                })
+            except:
+                pass
+            
+            try:
+                result = await self.connect_single_account_sequential(account)
+                
+                if result == 'auth_required':
+                    self.log_message(f"Authentication required for {phone}. Process paused.")
+                    self.connection_paused = True
+                    
+                    try:
+                        socketio.emit('connection_progress', {
+                            'current': index + 1,
+                            'total': len(self.connection_queue),
+                            'status': f"Authentication required for {phone}. Process paused.",
+                            'paused': True
+                        })
+                    except:
+                        pass
+                    return
+                    
+                elif result == 'success':
+                    connected_count += 1
+                    self.log_message(f"Successfully connected: {phone}")
+                    
+                else:
+                    failed_count += 1
+                    self.log_message(f"Failed to connect: {phone}")
+                    
+            except Exception as e:
+                failed_count += 1
+                self.log_message(f"Connection error for {phone}: {str(e)}")
+                account['status'] = 'Error'
+            
+            try:
+                socketio.emit('accounts_updated', self.get_accounts_data())
+            except:
+                pass
+            
+            if index < len(self.connection_queue) - 1:
+                await asyncio.sleep(2)
+        
+        self.finish_connection_process(connected_count, failed_count)
+    
+    def finish_connection_process(self, connected_count, failed_count):
+        self.connection_in_progress = False
+        self.connection_paused = False
+        self.current_connecting_phone = None
+        total = len(self.connection_queue)
+        
+        self.log_message(f"Connection process completed: {connected_count} connected, {failed_count} failed")
         
         try:
-            socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
+            socketio.emit('connection_progress', {
+                'current': total,
+                'total': total,
+                'status': f"Process completed: {connected_count} connected, {failed_count} failed",
+                'finished': True
+            })
+            
+            socketio.emit('accounts_updated', self.get_accounts_data())
         except:
             pass
-        
-        return {"success": True, "message": f"Added {added_count} scheduled posts!"}
     
-    def remove_scheduled_post(self, post_id):
-        post_to_remove = next((p for p in self.scheduled_posts if p['id'] == post_id), None)
-        if post_to_remove:
-            if post_to_remove['status'] in ['Sending', 'Sent']:
-                return {"success": False, "error": "Cannot remove post that is sending or sent!"}
+    async def connect_single_account_sequential(self, account):
+        phone = account['phone']
+        
+        try:
+            self.log_message(f"Initiating connection...", phone)
+            account['status'] = 'Connecting...'
             
-            self.scheduled_posts.remove(post_to_remove)
-            self.log_message(f"Removed scheduled post {post_id}")
+            if phone in self.clients:
+                try:
+                    old_client = self.clients[phone]
+                    del self.clients[phone]
+                    await asyncio.wait_for(old_client.disconnect(), timeout=3.0)
+                    await asyncio.sleep(0.5)
+                except Exception as cleanup_error:
+                    self.log_message(f"Cleanup error (continuing): {str(cleanup_error)}", phone)
+            
+            client = TelegramClient(
+                account['session_file'],
+                int(account['api_id']),
+                account['api_hash'],
+                timeout=20,
+                retry_delay=1,
+                auto_reconnect=True,
+                connection_retries=3
+            )
+            
+            await asyncio.wait_for(client.connect(), timeout=15.0)
+            
+            if not await client.is_user_authorized():
+                self.log_message(f"Authorization required - sending code", phone)
+                account['status'] = 'Waiting for code...'
+                
+                await client.send_code_request(phone)
+                
+                self.pending_auth[phone] = {
+                    'client': client,
+                    'account': account,
+                    'step': 'code'
+                }
+                
+                try:
+                    socketio.emit('auth_required', {
+                        'phone': phone,
+                        'step': 'code'
+                    })
+                    socketio.emit('accounts_updated', self.get_accounts_data())
+                except:
+                    pass
+                
+                return 'auth_required'
+            
+            me = await client.get_me()
+            self.clients[phone] = client
+            account['status'] = 'Connected'
+            self.log_message(f"Connected successfully: {me.first_name}", phone)
+            
+            try:
+                source_entity = await self.get_entity_safe(client, account['source_channel'], phone)
+                self.log_message(f"Source channel verified: {source_entity.title if hasattr(source_entity, 'title') else 'Channel'}", phone)
+                
+                for target_id in account['target_channels']:
+                    try:
+                        target_entity = await self.get_entity_safe(client, target_id, phone)
+                        self.log_message(f"Target channel {target_id} verified: {target_entity.title if hasattr(target_entity, 'title') else 'Channel'}", phone)
+                    except Exception as e:
+                        self.log_message(f"Warning: Target channel {target_id} not accessible: {str(e)}", phone)
+                        
+            except Exception as e:
+                self.log_message(f"Warning: Could not verify channels: {str(e)}", phone)
+            
+            return 'success'
+            
+        except asyncio.TimeoutError:
+            self.log_message(f"Connection timeout", phone)
+            account['status'] = 'Timeout'
+            return 'failed'
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "database is locked" in error_msg.lower():
+                self.log_message(f"Database locked, retrying...", phone)
+                account['status'] = 'Retrying...'
+                await asyncio.sleep(3)
+                
+                try:
+                    retry_client = TelegramClient(
+                        account['session_file'],
+                        int(account['api_id']),
+                        account['api_hash'],
+                        timeout=20,
+                        retry_delay=1,
+                        auto_reconnect=True,
+                        connection_retries=3
+                    )
+                    
+                    await asyncio.wait_for(retry_client.connect(), timeout=15.0)
+                    
+                    if await retry_client.is_user_authorized():
+                        me = await retry_client.get_me()
+                        self.clients[phone] = retry_client
+                        account['status'] = 'Connected'
+                        self.log_message(f"Connected after retry: {me.first_name}", phone)
+                        return 'success'
+                    else:
+                        account['status'] = 'Auth required after retry'
+                        self.log_message(f"Authorization required after retry", phone)
+                        await retry_client.send_code_request(phone)
+                        
+                        self.pending_auth[phone] = {
+                            'client': retry_client,
+                            'account': account,
+                            'step': 'code'
+                        }
+                        
+                        try:
+                            socketio.emit('auth_required', {
+                                'phone': phone,
+                                'step': 'code'
+                            })
+                        except:
+                            pass
+                        return 'auth_required'
+                        
+                except Exception as retry_error:
+                    self.log_message(f"Retry failed: {str(retry_error)}", phone)
+                    account['status'] = 'Retry failed'
+                    return 'failed'
+                    
+            else:
+                self.log_message(f"Connection error: {error_msg}", phone)
+                account['status'] = 'Error'
+                return 'failed'
+    
+    def submit_auth_code(self, phone, code):
+        if phone not in self.pending_auth:
+            return {"success": False, "error": "No pending authentication for this phone"}
+        
+        auth_data = self.pending_auth[phone]
+        
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self.process_auth_code(auth_data['account'], auth_data['client'], code, phone),
+                self.loop
+            )
+            return {"success": True, "message": "Code submitted"}
+        
+        return {"success": False, "error": "Async loop not available"}
+    
+    async def process_auth_code(self, account, client, code, phone):
+        try:
+            await client.sign_in(phone, code)
+            
+            me = await client.get_me()
+            self.clients[phone] = client
+            account['status'] = 'Connected'
+            self.log_message(f"Authentication successful: {me.first_name}", phone)
+            
+            if phone in self.pending_auth:
+                del self.pending_auth[phone]
+            
+            try:
+                socketio.emit('auth_success', {'phone': phone})
+                socketio.emit('accounts_updated', self.get_accounts_data())
+            except:
+                pass
+            
+            if self.connection_paused and self.connection_in_progress:
+                self.log_message("Resuming connection process...")
+                await asyncio.sleep(1)
+                await self.resume_connection_after_auth()
+            
+        except SessionPasswordNeededError:
+            self.log_message("2FA password required", phone)
+            
+            self.pending_auth[phone]['step'] = 'password'
+            
+            try:
+                socketio.emit('auth_required', {
+                    'phone': phone,
+                    'step': 'password'
+                })
+            except:
+                pass
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.log_message(f"Code authentication error: {error_msg}", phone)
+            
+            if phone in self.pending_auth:
+                del self.pending_auth[phone]
+            
+            account['status'] = 'Auth error'
+            
+            try:
+                socketio.emit('auth_error', {
+                    'phone': phone,
+                    'error': error_msg
+                })
+                socketio.emit('accounts_updated', self.get_accounts_data())
+            except:
+                pass
+            
+            if self.connection_paused and self.connection_in_progress:
+                self.log_message("Resuming connection process after auth error...")
+                await asyncio.sleep(1)
+                await self.resume_connection_after_auth()
+    
+    def submit_auth_password(self, phone, password):
+        if phone not in self.pending_auth:
+            return {"success": False, "error": "No pending authentication for this phone"}
+        
+        auth_data = self.pending_auth[phone]
+        
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self.process_auth_password(auth_data['account'], auth_data['client'], password, phone),
+                self.loop
+            )
+            return {"success": True, "message": "Password submitted"}
+        
+        return {"success": False, "error": "Async loop not available"}
+    
+    async def process_auth_password(self, account, client, password, phone):
+        try:
+            await client.sign_in(password=password)
+            
+            me = await client.get_me()
+            self.clients[phone] = client
+            account['status'] = 'Connected'
+            self.log_message(f"2FA authentication successful: {me.first_name}", phone)
+            
+            if phone in self.pending_auth:
+                del self.pending_auth[phone]
+            
+            try:
+                socketio.emit('auth_success', {'phone': phone})
+                socketio.emit('accounts_updated', self.get_accounts_data())
+            except:
+                pass
+            
+            if self.connection_paused and self.connection_in_progress:
+                self.log_message("Resuming connection process...")
+                await asyncio.sleep(1)
+                await self.resume_connection_after_auth()
+            
+        except Exception as e:
+            self.log_message(f"2FA password error: {str(e)}", phone)
+            account['status'] = '2FA error'
+            
+            if phone in self.pending_auth:
+                del self.pending_auth[phone]
+            
+            try:
+                socketio.emit('auth_error', {
+                    'phone': phone,
+                    'error': str(e)
+                })
+                socketio.emit('accounts_updated', self.get_accounts_data())
+            except:
+                pass
+            
+            if self.connection_paused and self.connection_in_progress:
+                self.log_message("Resuming connection process after auth error...")
+                await asyncio.sleep(1)
+                await self.resume_connection_after_auth()
+    
+    async def resume_connection_after_auth(self):
+        if not self.connection_in_progress or not self.connection_paused:
+            return
+        
+        self.connection_paused = False
+        
+        current_index = next((i for i, acc in enumerate(self.connection_queue) 
+                            if acc['phone'] == self.current_connecting_phone), -1)
+        
+        if current_index == -1:
+            self.finish_connection_process(len(self.clients), 0)
+            return
+        
+        connected_count = len(self.clients)
+        failed_count = 0
+        
+        for index in range(current_index + 1, len(self.connection_queue)):
+            if not self.connection_in_progress:
+                break
+                
+            account = self.connection_queue[index]
+            phone = account['phone']
+            self.current_connecting_phone = phone
+            
+            self.log_message(f"Continuing with account {index + 1}/{len(self.connection_queue)}: {phone}")
+            
+            try:
+                socketio.emit('connection_progress', {
+                    'current': index + 1,
+                    'total': len(self.connection_queue),
+                    'status': f"Connecting {phone}..."
+                })
+            except:
+                pass
+            
+            try:
+                result = await self.connect_single_account_sequential(account)
+                
+                if result == 'auth_required':
+                    self.log_message(f"Authentication required for {phone}. Process paused again.")
+                    self.connection_paused = True
+                    
+                    try:
+                        socketio.emit('connection_progress', {
+                            'current': index + 1,
+                            'total': len(self.connection_queue),
+                            'status': f"Authentication required for {phone}. Process paused.",
+                            'paused': True
+                        })
+                    except:
+                        pass
+                    return
+                    
+                elif result == 'success':
+                    connected_count += 1
+                    self.log_message(f"Successfully connected: {phone}")
+                    
+                else:
+                    failed_count += 1
+                    self.log_message(f"Failed to connect: {phone}")
+                    
+            except Exception as e:
+                failed_count += 1
+                self.log_message(f"Connection error for {phone}: {str(e)}")
+                account['status'] = 'Error'
+            
+            try:
+                socketio.emit('accounts_updated', self.get_accounts_data())
+            except:
+                pass
+            
+            if index < len(self.connection_queue) - 1:
+                await asyncio.sleep(2)
+        
+        total_connected = len(self.clients)
+        total_failed = len(self.connection_queue) - total_connected
+        self.finish_connection_process(total_connected, total_failed)
+    
+    def scan_all_posts(self):
+        if not self.clients:
+            return {"success": False, "error": "Connect to accounts first!"}
+        
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(self.perform_scan_all_posts(), self.loop)
+        
+        self.scan_message("Starting scan of all posts...")
+        self.log_message("Starting scan of all posts...")
+        
+        return {"success": True, "message": "Post scanning started"}
+    
+    async def perform_scan_all_posts(self):
+        self.scanned_ids = {}
+        
+        for phone, client in self.clients.items():
+            try:
+                account = next(acc for acc in self.accounts if acc['phone'] == phone)
+                await self.scan_channel_posts(account, client)
+            except Exception as e:
+                self.log_message(f"Scan error: {str(e)}", phone)
+        
+        self.scan_message(f"Scan completed")
+        self.log_message(f"Post scanning completed")
+        
+        try:
+            socketio.emit('scanned_ids_updated', {'ids': self.scanned_ids})
+        except:
+            pass
+    
+    async def scan_channel_posts(self, account, client):
+        try:
+            channel_id = account['source_channel']
+            source_entity = await self.get_entity_safe(client, channel_id, account['phone'])
+            phone = account['phone']
+            
+            self.scan_message(f"Scanning channel: {channel_id}", phone)
+            
+            if phone not in self.scanned_ids:
+                self.scanned_ids[phone] = []
+            
+            message_count = 0
+            service_count = 0
+            async for message in client.iter_messages(source_entity, limit=None):
+                if hasattr(message, '__class__') and 'MessageService' in str(message.__class__):
+                    service_count += 1
+                    continue
+                
+                if not message.text and not message.media:
+                    service_count += 1
+                    continue
+                
+                message_count += 1
+                self.scanned_ids[phone].append(str(message.id))
+                self.scan_message(f"Message ID: {message.id}", phone, channel_id)
+                
+                if message_count % 100 == 0:
+                    await asyncio.sleep(0.1)
+            
+            self.scan_message(f"Scan completed: {message_count} content messages, {service_count} service messages skipped", phone, channel_id)
+            self.log_message(f"Channel scan: {message_count} messages ({service_count} skipped)", phone)
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.scan_message(f"Channel scan error: {error_msg}", account['phone'])
+            self.log_message(f"Channel scan error: {error_msg}", account['phone'])
+            
+            if "Could not find the input entity" in error_msg:
+                channel_id = account['source_channel']
+                self.log_message(f"HINT: If channel ID is {channel_id}, try: -100{channel_id}", account['phone'])
+                self.scan_message(f"HINT: Try formatting channel ID as: -100{channel_id}", account['phone'])
+    
+    def add_scheduled_posts(self, post_ids, time_slots, selected_channels):
+        if not post_ids:
+            return {"success": False, "error": "Enter at least one message ID!"}
+        
+        if not time_slots:
+            return {"success": False, "error": "Create at least one time slot!"}
+        
+        if not selected_channels:
+            return {"success": False, "error": "Select at least one channel!"}
+        
+        try:
+            post_ids_list = [id.strip() for id in post_ids.split(',')]
+            for post_id in post_ids_list:
+                int(post_id)
+        except ValueError:
+            return {"success": False, "error": "All message IDs must be valid numbers!"}
+        
+        utc_plus_1 = timezone(timedelta(hours=2))
+        current_time = datetime.now(utc_plus_1)
+        
+        created_posts = []
+        
+        all_channels = []
+        for phone, channels in selected_channels.items():
+            for channel in channels:
+                all_channels.append({'phone': phone, 'channel': channel})
+        
+        post_pool = post_ids_list
+        
+        for i, time_slot in enumerate(time_slots):
+            try:
+                slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
+                slot_datetime = slot_datetime.replace(tzinfo=utc_plus_1)
+            except:
+                continue
+                
+            time_diff = (slot_datetime - current_time).total_seconds()
+            if time_diff < -60:
+                continue
+            
+            channel_posts = {}
+            
+            for ch_info in all_channels:
+                phone = ch_info['phone']
+                channel = ch_info['channel']
+                
+                selected_post_id = random.choice(post_pool)
+                
+                if phone not in channel_posts:
+                    channel_posts[phone] = []
+                channel_posts[phone].append({'channel': channel, 'post_id': selected_post_id})
+            
+            scheduled_post = {
+                "id": len(self.scheduled_posts) + 1,
+                "posts": channel_posts,
+                "datetime": slot_datetime,
+                "status": "Pending",
+                "created": current_time
+            }
+            
+            self.scheduled_posts.append(scheduled_post)
+            created_posts.append(scheduled_post)
+        
+        if created_posts:
+            total_channels = len(all_channels)
+            self.log_message(f"Created {len(created_posts)} scheduled posts with {total_channels} channels each")
+            
+            if not self.scheduler_running and self.loop and self.clients:
+                self.log_message("Auto-starting scheduler for new posts")
+                self.scheduler_running = True
+                asyncio.run_coroutine_threadsafe(self.run_scheduler(), self.loop)
+                try:
+                    socketio.emit('scheduler_status', {'running': True})
+                except:
+                    pass
             
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
             
-            return {"success": True, "message": "Post removed!"}
-        return {"success": False, "error": "Post not found!"}
+            return {"success": True, "message": f"Created {len(created_posts)} scheduled posts!"}
+        else:
+            return {"success": False, "error": "No valid time slots created!"}
     
     def get_scheduled_posts_data(self):
-        data = []
+        posts_data = []
         for post in self.scheduled_posts:
-            total_accounts = len(post['posts'])
-            total_channels = sum(len(ch) for ch in post['posts'].values())
+            total_channels = sum(len(channels) for channels in post['posts'].values())
+            accounts_info = f"{len(post['posts'])} accounts, {total_channels} channels"
             
-            all_message_ids = [ch['post_id'] for phone_ch in post['posts'].values() for ch in phone_ch]
-            message_ids_str = ', '.join(map(str, sorted(set(all_message_ids)))) if all_message_ids else 'None'
+            post_ids_display = []
+            for phone, channels in post['posts'].items():
+                for ch_info in channels:
+                    post_ids_display.append(ch_info['post_id'])
+            unique_posts = list(set(post_ids_display))
             
-            dt = post['datetime'] if isinstance(post['datetime'], datetime) else datetime.strptime(post['datetime'], '%Y-%m-%d %H:%M:%S')
-            
-            data.append({
+            posts_data.append({
                 'id': post['id'],
-                'datetime': dt.strftime('%d.%m.%Y %H:%M'),
-                'message_ids': message_ids_str,
-                'distribution': f"{total_accounts} accounts, {total_channels} channels",
+                'time': post['datetime'].strftime('%d.%m.%Y %H:%M'),
+                'post': ', '.join(unique_posts[:5]) + ('...' if len(unique_posts) > 5 else ''),
+                'accounts': accounts_info,
                 'status': post['status']
             })
-        return {'posts': data}
+        
+        return posts_data
+    
+    def remove_scheduled_post(self, post_id):
+        self.scheduled_posts = [p for p in self.scheduled_posts if p['id'] != post_id]
+        try:
+            socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
+        except:
+            pass
+        self.log_message(f"Scheduled post removed: ID {post_id}")
+        return {"success": True, "message": "Scheduled post removed"}
     
     def start_scheduler(self):
-        if self.scheduler_running:
-            return {"success": False, "error": "Scheduler already running!"}
+        if not self.scheduled_posts:
+            return {"success": False, "error": "No scheduled posts available!"}
+        
+        if not self.loop:
+            return {"success": False, "error": "Async loop not available!"}
+        
+        if not self.clients:
+            return {"success": False, "error": "No accounts connected!"}
         
         self.scheduler_running = True
-        threading.Thread(target=lambda: asyncio.run_coroutine_threadsafe(self.run_scheduler(), self.loop), daemon=True).start()
+        
+        asyncio.run_coroutine_threadsafe(self.run_scheduler(), self.loop)
+        
+        pending_posts = [p for p in self.scheduled_posts if p['status'] == 'Pending']
+        self.log_message(f"Scheduler started - {len(pending_posts)} pending posts")
         
         try:
             socketio.emit('scheduler_status', {'running': True})
         except:
             pass
-        
-        self.log_message("Scheduler started")
-        return {"success": True, "message": "Scheduler started!"}
+        return {"success": True, "message": f"Scheduler started - {len(pending_posts)} pending posts"}
     
     async def run_scheduler(self):
+        utc_plus_1 = timezone(timedelta(hours=2))
+        self.log_message("Scheduler started - checking every 10 seconds for pending posts")
+        
         while self.scheduler_running:
             try:
-                now = datetime.now(timezone(timedelta(hours=2)))
+                current_time = datetime.now(utc_plus_1)
+                self.log_message(f"Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 
-                posts_to_send = [p for p in self.scheduled_posts if p['status'] == 'Pending' and p['datetime'] <= now]
+                posts_to_send = []
+                for post in self.scheduled_posts:
+                    if post['status'] == 'Pending':
+                        post_time = post['datetime']
+                        if isinstance(post_time, str):
+                            try:
+                                post_time = datetime.strptime(post_time, '%Y-%m-%d %H:%M:%S')
+                                post_time = post_time.replace(tzinfo=utc_plus_1)
+                            except:
+                                try:
+                                    post_time = datetime.strptime(post_time, '%Y-%m-%dT%H:%M')
+                                    post_time = post_time.replace(tzinfo=utc_plus_1)
+                                except:
+                                    self.log_message(f"Invalid datetime format for post {post['id']}: {post_time}")
+                                    continue
+                        
+                        if not hasattr(post_time, 'tzinfo') or post_time.tzinfo is None:
+                            post_time = post_time.replace(tzinfo=utc_plus_1)
+                        
+                        time_diff = (post_time - current_time).total_seconds()
+                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')}, time diff: {time_diff} seconds")
+                        
+                        if time_diff <= 0:
+                            posts_to_send.append(post)
+                            self.log_message(f"Post {post['id']} ready to send!")
                 
                 if posts_to_send:
-                    posts_to_send.sort(key=lambda x: x['datetime'] if isinstance(x['datetime'], datetime) else datetime.strptime(x['datetime'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone(timedelta(hours=2))))
+                    self.log_message(f"Found {len(posts_to_send)} posts ready to send")
+                    posts_to_send.sort(key=lambda x: x['datetime'] if isinstance(x['datetime'], datetime) else datetime.strptime(x['datetime'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=utc_plus_1))
                     
                     for post in posts_to_send:
                         if self.scheduler_running:
@@ -1074,7 +1514,7 @@ def get_log_history():
 @app.route('/api/scan/history', methods=['GET'])
 @login_required
 def get_scan_history():
-    return jsonify({"history": forwarder.get_scan_history()})
+    return jupytext({"history": forwarder.get_scan_history()})
 
 @app.route('/health')
 def health():
