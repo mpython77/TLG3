@@ -983,10 +983,6 @@ class WebTelegramForwarder:
             for channel in channels:
                 all_channels.append({'phone': phone, 'channel': channel})
         
-        post_pool = post_ids_list.copy()
-        random.shuffle(post_pool)
-        post_index = 0
-        
         for i, time_slot in enumerate(time_slots):
             try:
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
@@ -1004,8 +1000,7 @@ class WebTelegramForwarder:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
                 
-                selected_post_id = post_pool[post_index % len(post_pool)]
-                post_index += 1
+                selected_post_id = random.choice(post_ids_list)
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
@@ -1193,17 +1188,17 @@ class WebTelegramForwarder:
                         
                         await self.send_single_scheduled_post(client, post_id, channel, phone)
                         success_count += 1
-                        self.log_message(f"✓ Successfully sent post {post_id} to channel {channel}", phone)
+                        self.log_message(f"Successfully sent post {post_id} to channel {channel}", phone)
                         
                     except FloodWaitError as e:
-                        self.log_message(f"✗ FloodWait {e.seconds}s for channel {channel} - Try increasing delay", phone)
+                        self.log_message(f"FloodWait {e.seconds}s for channel {channel} - Try increasing delay", phone)
                     except ChannelPrivateError:
-                        self.log_message(f"✗ Channel {channel} is private or bot not member", phone)
+                        self.log_message(f"Channel {channel} is private or bot not member", phone)
                     except UserBannedInChannelError:
-                        self.log_message(f"✗ User banned in channel {channel}", phone)
+                        self.log_message(f"User banned in channel {channel}", phone)
                     except Exception as e:
                         error_type = type(e).__name__
-                        self.log_message(f"✗ Failed channel {channel}: {error_type} - {str(e)}", phone)
+                        self.log_message(f"Failed channel {channel}: {error_type} - {str(e)}", phone)
             
             if success_count == total_count and total_count > 0:
                 post['status'] = 'Sent'
@@ -1557,11 +1552,11 @@ if __name__ == '__main__':
     auth_test = AuthManager()
     test_creds = auth_test.load_credentials()
     if test_creds:
-        print(f"✓ Credentials loaded successfully")
+        print(f"Credentials loaded successfully")
         print(f"  Username: {test_creds['login']}")
         print(f"  Password: {test_creds['password']}")
     else:
-        print("✗ Failed to load credentials")
+        print("Failed to load credentials")
     
     print("="*50)
     
