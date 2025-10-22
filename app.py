@@ -1003,12 +1003,11 @@ class WebTelegramForwarder:
             if len(post_ids_list) >= num_channels:
                 assigned_ids = random.sample(post_ids_list, num_channels)
             else:
-                num_full_sets = num_channels // len(post_ids_list)
-                remainder = num_channels % len(post_ids_list)
-                extended = post_ids_list * num_full_sets
-                if remainder > 0:
-                    extended += random.sample(post_ids_list, remainder)
-                assigned_ids = extended
+                target_size = int(1.5 * num_channels)
+                num_full = target_size // len(post_ids_list)
+                remainder = target_size % len(post_ids_list)
+                extended_pool = post_ids_list * num_full + post_ids_list[:remainder]
+                assigned_ids = random.sample(extended_pool, num_channels)
             
             random.shuffle(assigned_ids)
             
