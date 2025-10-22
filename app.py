@@ -1067,12 +1067,12 @@ class WebTelegramForwarder:
                 for ch_info in channels:
                     post_ids_display.append(ch_info['post_id'])
             
-            post_ids_display.sort()
+            unique_posts = sorted(set(post_ids_display))
             
             posts_data.append({
                 'id': post['id'],
                 'time': post['datetime'].strftime('%d.%m.%Y %H:%M'),
-                'post': ', '.join(post_ids_display[:5]) + ('...' if len(post_ids_display) > 5 else ''),
+                'post': ', '.join(unique_posts[:5]) + ('...' if len(unique_posts) > 5 else ''),
                 'accounts': accounts_info,
                 'status': post['status']
             })
