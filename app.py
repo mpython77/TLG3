@@ -969,7 +969,7 @@ class WebTelegramForwarder:
         post_ids_list = [id.strip() for id in post_ids.split(',') if id.strip()]
         try:
             post_ids_list = [str(int(pid)) for pid in post_ids_list]
-            post_ids_list = list(set(post_ids_list))  # Remove duplicates if any
+            post_ids_list = list(set(post_ids_list))
         except ValueError:
             return {"success": False, "error": "All message IDs must be valid numbers!"}
         
@@ -988,6 +988,11 @@ class WebTelegramForwarder:
         
         num_channels = len(all_channels)
         
+        channel_used_ids = {}
+        for ch_info in all_channels:
+            channel_key = f"{ch_info['phone']}_{ch_info['channel']}"
+            channel_used_ids[channel_key] = set()
+        
         for i, time_slot in enumerate(time_slots):
             try:
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
@@ -999,25 +1004,22 @@ class WebTelegramForwarder:
             if time_diff < -60:
                 continue
             
-            # Smart assignment of post IDs
-            if len(post_ids_list) >= num_channels:
-                assigned_ids = random.sample(post_ids_list, num_channels)
-            else:
-                target_size = int(1.5 * num_channels)
-                num_full = target_size // len(post_ids_list)
-                remainder = target_size % len(post_ids_list)
-                extended_pool = post_ids_list * num_full + post_ids_list[:remainder]
-                assigned_ids = random.sample(extended_pool, num_channels)
-            
-            random.shuffle(assigned_ids)
-            
             channel_posts = {}
-            id_idx = 0
+            
             for ch_info in all_channels:
                 phone = ch_info['phone']
                 channel = ch_info['channel']
-                selected_post_id = assigned_ids[id_idx]
-                id_idx += 1
+                channel_key = f"{phone}_{channel}"
+                
+                available_ids = [pid for pid in post_ids_list if pid not in channel_used_ids[channel_key]]
+                
+                if not available_ids:
+                    channel_used_ids[channel_key].clear()
+                    available_ids = post_ids_list.copy()
+                
+                selected_post_id = random.choice(available_ids)
+                
+                channel_used_ids[channel_key].add(selected_post_id)
                 
                 if phone not in channel_posts:
                     channel_posts[phone] = []
@@ -1054,8 +1056,8 @@ class WebTelegramForwarder:
             
             return {"success": True, "message": f"Created {len(created_posts)} scheduled posts!"}
         else:
-            return {"success": False, "error": "No valid time slots created!"}
-    
+            return {"success": False, "error": "No valid time slots created!"}    
+          
     def get_scheduled_posts_data(self):
         posts_data = []
         for post in self.scheduled_posts:
