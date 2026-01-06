@@ -1183,31 +1183,59 @@ class WebTelegramForwarder:
             except:
                 pass
 
-            self.log_message(f"Starting to send scheduled post ID {post['id']}")
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            self.log_message(f"📤 Starting Post ID {post['id']} Delivery")
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
             success_count = 0
             total_count = 0
             failed_channels = []
+            error_summary = {}
 
             for phone, channels_data in post['posts'].items():
+                # Verify account connection
                 if phone not in self.clients:
-                    self.log_message(f"Account not connected: {phone}")
+                    error_msg = "ACCOUNT NOT CONNECTED"
+                    self.log_message(f"❌ {error_msg}: {phone}")
                     for ch_info in channels_data:
-                        failed_channels.append(f"{phone}:{ch_info['channel']} (Not connected)")
+                        failed_channels.append(f"{phone}:{ch_info['channel']} ({error_msg})")
+                        error_summary[error_msg] = error_summary.get(error_msg, 0) + 1
                     continue
 
                 client = self.clients[phone]
-                self.log_message(f"Using account {phone} for {len(channels_data)} channels")
+
+                # Check if client is still connected
+                try:
+                    is_connected = await client.is_user_authorized()
+                    if not is_connected:
+                        error_msg = "ACCOUNT DISCONNECTED"
+                        self.log_message(f"❌ {error_msg}: {phone}")
+                        for ch_info in channels_data:
+                            failed_channels.append(f"{phone}:{ch_info['channel']} ({error_msg})")
+                            error_summary[error_msg] = error_summary.get(error_msg, 0) + 1
+                        continue
+                except Exception as e:
+                    error_msg = "CONNECTION CHECK FAILED"
+                    self.log_message(f"❌ {error_msg} for {phone}: {str(e)}")
+                    for ch_info in channels_data:
+                        failed_channels.append(f"{phone}:{ch_info['channel']} ({error_msg})")
+                        error_summary[error_msg] = error_summary.get(error_msg, 0) + 1
+                    continue
+
+                self.log_message(f"📱 Account {phone}: Processing {len(channels_data)} channels")
 
                 for ch_info in channels_data:
                     channel = ch_info['channel']
                     post_id = ch_info['post_id']
                     total_count += 1
 
+                    self.log_message(f"→ Channel {channel} | Post {post_id} | Attempt 1/{3}", phone)
+
                     # Try sending with retry mechanism
                     retry_count = 0
                     max_retries = 3
                     sent = False
+                    last_error = None
 
                     while retry_count < max_retries and not sent:
                         try:
@@ -1216,65 +1244,141 @@ class WebTelegramForwarder:
 
                             # Add extra delay if this is a retry
                             if retry_count > 0:
-                                retry_delay = retry_count * 10
-                                self.log_message(f"Retry {retry_count}/{max_retries} - Adding {retry_delay}s delay for channel {channel}", phone)
+                                retry_delay = retry_count * 15  # Increased from 10 to 15
+                                self.log_message(f"🔄 Retry {retry_count}/{max_retries} - Waiting {retry_delay}s extra for channel {channel}", phone)
                                 delay += retry_delay
 
-                            self.log_message(f"Waiting {delay:.1f} seconds before sending to channel {channel}", phone)
+                            self.log_message(f"⏳ Waiting {delay:.1f}s before sending to channel {channel}", phone)
                             await asyncio.sleep(delay)
+
+                            # Verify connection before each send
+                            if not await client.is_user_authorized():
+                                raise ConnectionError("Account disconnected during send")
 
                             await self.send_single_scheduled_post(client, post_id, channel, phone)
                             success_count += 1
                             sent = True
-                            self.log_message(f"✓ Successfully sent post {post_id} to channel {channel}", phone)
+                            self.log_message(f"✅ SUCCESS | Channel {channel} | Post {post_id} sent", phone)
 
                         except FloodWaitError as e:
                             wait_time = e.seconds
-                            self.log_message(f"⚠ FloodWait {wait_time}s for channel {channel} - Waiting...", phone)
-
-                            # Wait the required time + small buffer
-                            await asyncio.sleep(wait_time + 5)
                             retry_count += 1
 
-                            if retry_count >= max_retries:
-                                failed_channels.append(f"{phone}:{channel} (FloodWait {wait_time}s)")
-                                self.log_message(f"✗ Max retries reached for channel {channel} due to FloodWait", phone)
+                            error_category = "TELEGRAM_FLOOD_WAIT"
+                            self.log_message(f"⚠️  {error_category} | Channel {channel} | Wait: {wait_time}s | Attempt: {retry_count}/{max_retries}", phone)
 
-                        except ChannelPrivateError:
-                            failed_channels.append(f"{phone}:{channel} (Private/Not member)")
-                            self.log_message(f"✗ Channel {channel} is private or bot not member", phone)
+                            if retry_count < max_retries:
+                                # Wait the required time + buffer
+                                buffer = min(10, wait_time * 0.1)  # 10% buffer, max 10s
+                                total_wait = wait_time + buffer
+                                self.log_message(f"⏰ Waiting {total_wait:.0f}s (Telegram: {wait_time}s + Buffer: {buffer:.0f}s)", phone)
+                                await asyncio.sleep(total_wait)
+                            else:
+                                failed_channels.append(f"{phone}:{channel} (FloodWait {wait_time}s - max retries)")
+                                error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                                self.log_message(f"❌ FAILED | Channel {channel} | Max retries reached after FloodWait", phone)
+                                last_error = f"FloodWait {wait_time}s"
+
+                        except ChannelPrivateError as e:
+                            error_category = "CHANNEL_PRIVATE"
+                            self.log_message(f"❌ {error_category} | Channel {channel} | Not accessible or not a member", phone)
+                            failed_channels.append(f"{phone}:{channel} ({error_category})")
+                            error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                            last_error = "Channel is private or bot not member"
                             break  # No point retrying this
 
-                        except UserBannedInChannelError:
-                            failed_channels.append(f"{phone}:{channel} (User banned)")
-                            self.log_message(f"✗ User banned in channel {channel}", phone)
+                        except UserBannedInChannelError as e:
+                            error_category = "USER_BANNED"
+                            self.log_message(f"❌ {error_category} | Channel {channel} | Account is banned", phone)
+                            failed_channels.append(f"{phone}:{channel} ({error_category})")
+                            error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                            last_error = "User banned in channel"
                             break  # No point retrying this
+
+                        except ConnectionError as e:
+                            error_category = "CONNECTION_ERROR"
+                            retry_count += 1
+                            self.log_message(f"⚠️  {error_category} | Channel {channel} | {str(e)} | Attempt: {retry_count}/{max_retries}", phone)
+
+                            if retry_count < max_retries:
+                                reconnect_wait = 5
+                                self.log_message(f"🔌 Attempting to verify connection in {reconnect_wait}s...", phone)
+                                await asyncio.sleep(reconnect_wait)
+                            else:
+                                failed_channels.append(f"{phone}:{channel} ({error_category})")
+                                error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                                last_error = str(e)
+
+                        except asyncio.TimeoutError as e:
+                            error_category = "TIMEOUT"
+                            retry_count += 1
+                            self.log_message(f"⚠️  {error_category} | Channel {channel} | Request timed out | Attempt: {retry_count}/{max_retries}", phone)
+
+                            if retry_count < max_retries:
+                                await asyncio.sleep(10)
+                            else:
+                                failed_channels.append(f"{phone}:{channel} ({error_category})")
+                                error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                                last_error = "Request timeout"
+
+                        except ValueError as e:
+                            error_category = "VALIDATION_ERROR"
+                            error_msg = str(e)
+                            self.log_message(f"❌ {error_category} | Channel {channel} | {error_msg}", phone)
+                            failed_channels.append(f"{phone}:{channel} ({error_category})")
+                            error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                            last_error = error_msg
+                            break  # Validation errors won't be fixed by retry
 
                         except Exception as e:
                             error_type = type(e).__name__
                             error_msg = str(e)
-
                             retry_count += 1
+
+                            self.log_message(f"⚠️  {error_type} | Channel {channel} | {error_msg} | Attempt: {retry_count}/{max_retries}", phone)
+
                             if retry_count >= max_retries:
                                 failed_channels.append(f"{phone}:{channel} ({error_type})")
-                                self.log_message(f"✗ Failed channel {channel} after {max_retries} retries: {error_type} - {error_msg}", phone)
+                                error_summary[error_type] = error_summary.get(error_type, 0) + 1
+                                self.log_message(f"❌ FAILED | Channel {channel} | {error_type}: {error_msg}", phone)
+                                last_error = f"{error_type}: {error_msg}"
                             else:
-                                self.log_message(f"⚠ Error on channel {channel}, retry {retry_count}/{max_retries}: {error_type}", phone)
+                                await asyncio.sleep(5)
 
-            # Final status update
+            # Final status update with detailed summary
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
             if success_count == total_count and total_count > 0:
                 post['status'] = 'Sent'
-                self.log_message(f"✓ Post {post['id']} fully sent: {success_count}/{total_count} successful")
+                self.log_message(f"✅ POST {post['id']} FULLY SENT | Success: {success_count}/{total_count} (100%)")
             elif success_count > 0:
+                percentage = (success_count / total_count) * 100
                 post['status'] = f'Partial ({success_count}/{total_count})'
-                self.log_message(f"⚠ Post {post['id']} partially sent: {success_count}/{total_count} successful")
+                self.log_message(f"⚠️  POST {post['id']} PARTIALLY SENT | Success: {success_count}/{total_count} ({percentage:.1f}%)")
+
+                # Error summary
+                if error_summary:
+                    self.log_message(f"📊 ERROR SUMMARY:")
+                    for error_type, count in sorted(error_summary.items(), key=lambda x: x[1], reverse=True):
+                        self.log_message(f"   • {error_type}: {count} channel(s)")
+
+                # Failed channels detail
                 if failed_channels:
-                    self.log_message(f"Failed channels: {', '.join(failed_channels)}")
+                    self.log_message(f"❌ FAILED CHANNELS ({len(failed_channels)}):")
+                    for fc in failed_channels[:10]:  # Show max 10
+                        self.log_message(f"   • {fc}")
+                    if len(failed_channels) > 10:
+                        self.log_message(f"   ... and {len(failed_channels) - 10} more")
             else:
                 post['status'] = 'Error'
-                self.log_message(f"✗ Post {post['id']} failed: 0/{total_count} successful")
-                if failed_channels:
-                    self.log_message(f"All failed: {', '.join(failed_channels)}")
+                self.log_message(f"❌ POST {post['id']} FAILED | Success: 0/{total_count} (0%)")
+
+                if error_summary:
+                    self.log_message(f"📊 ERROR SUMMARY:")
+                    for error_type, count in sorted(error_summary.items(), key=lambda x: x[1], reverse=True):
+                        self.log_message(f"   • {error_type}: {count} channel(s)")
+
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
@@ -1283,7 +1387,9 @@ class WebTelegramForwarder:
 
         except Exception as e:
             post['status'] = 'Error'
-            self.log_message(f"Scheduled post general error: {str(e)}")
+            self.log_message(f"❌ CRITICAL ERROR in scheduled post: {type(e).__name__} - {str(e)}")
+            import traceback
+            self.log_message(f"Stack trace: {traceback.format_exc()}")
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
