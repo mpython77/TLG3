@@ -610,16 +610,15 @@ class WebTelegramForwarder:
                 except Exception as cleanup_error:
                     self.log_message(f"Cleanup error (continuing): {str(cleanup_error)}", phone)
 
-            # Check if session_string exists in database
-            db_account = self.db.get_account_by_phone(phone)
-            session_string = db_account.get('session_string') if db_account else None
+            # Check if session_string exists in account (already loaded from database)
+            session_string = account.get('session_string')
 
             # Use StringSession if available, otherwise use file-based session
             if session_string:
-                self.log_message(f"Using saved session string", phone)
+                self.log_message(f"✅ Using saved session string from database", phone)
                 session = StringSession(session_string)
             else:
-                self.log_message(f"Using file-based session", phone)
+                self.log_message(f"⚠️  No saved session - using file-based session", phone)
                 session = account['session_file']
 
             client = TelegramClient(
