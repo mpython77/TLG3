@@ -13,6 +13,7 @@ from telethon.errors import SessionPasswordNeededError, FloodWaitError, ChannelP
 from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 import re
 import hashlib
+from database import get_db, DatabaseManager
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-this-in-production')
@@ -109,40 +110,61 @@ class AuthManager:
 
 class WebTelegramForwarder:
     def __init__(self):
-        self.config_file = 'accounts_config.json'
-        self.accounts = self.load_accounts()
+        # Initialize database connection
+        try:
+            self.db = get_db()
+            self.log_message("✅ PostgreSQL connected successfully")
+
+            # Migrate from JSON if exists
+            json_file = 'accounts_config.json'
+            if os.path.exists(json_file):
+                self.log_message(f"📦 Found {json_file}, migrating to PostgreSQL...")
+                migrated = self.db.migrate_from_json(json_file)
+                if migrated > 0:
+                    self.log_message(f"✅ Migrated {migrated} accounts to PostgreSQL")
+                    # Backup and remove JSON file
+                    import shutil
+                    shutil.move(json_file, f"{json_file}.backup")
+                    self.log_message(f"📦 JSON file backed up to {json_file}.backup")
+        except Exception as e:
+            print(f"❌ Database initialization failed: {str(e)}")
+            print("Please configure DATABASE_URL environment variable")
+            raise
+
+        self.config_file = 'accounts_config.json'  # Keep for backward compatibility
+        self.accounts = []  # Will be loaded from database
         self.clients = {}
         self.running = False
-        
+
         self.min_delay = 15
         self.max_delay = 25
         self.last_forward_time = {}
-        
+
         self.connection_queue = []
         self.current_connecting_phone = None
         self.connection_in_progress = False
         self.connection_paused = False
-        
-        self.scheduled_posts = []
+
+        self.scheduled_posts = []  # Will be loaded from database
         self.scheduler_running = False
         self.used_post_ids = set()
-        
+
         self.active_tasks = set()
         self.connection_semaphore = None
-        
+
         self.loop = None
         self.loop_thread = None
-        
+
         self.pending_auth = {}
-        
+
         self.log_history = []
         self.scan_history = []
         self.max_history_size = 500
-        
+
         self.entity_cache = {}
-        
+
         self.scanned_ids = {}
-        
+
         logging.basicConfig(
             format='%(asctime)s - %(levelname)s - %(message)s',
             level=logging.WARNING,
@@ -151,7 +173,13 @@ class WebTelegramForwarder:
             ]
         )
         self.logger = logging.getLogger(__name__)
-        
+
+        # Load accounts from database
+        self.reload_accounts()
+
+        # Load scheduled posts from database
+        self.reload_scheduled_posts()
+
         self.start_async_loop()
         
     def start_async_loop(self):
@@ -169,22 +197,32 @@ class WebTelegramForwarder:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
         
-    def load_accounts(self):
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return []
-        return []
-    
-    def save_accounts(self):
+    def reload_accounts(self):
+        """Load accounts from PostgreSQL database"""
         try:
-            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.accounts, f, indent=2, ensure_ascii=False)
+            self.accounts = self.db.get_all_accounts()
+            self.logger.info(f"📥 Loaded {len(self.accounts)} accounts from database")
         except Exception as e:
-            self.logger.error(f"Error saving accounts: {e}")
+            self.logger.error(f"❌ Failed to load accounts: {str(e)}")
+            self.accounts = []
+
+    def reload_scheduled_posts(self):
+        """Load scheduled posts from PostgreSQL database"""
+        try:
+            self.scheduled_posts = self.db.get_all_scheduled_posts()
+            self.logger.info(f"📥 Loaded {len(self.scheduled_posts)} scheduled posts from database")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load scheduled posts: {str(e)}")
+            self.scheduled_posts = []
+
+    def load_accounts(self):
+        """Legacy method for backward compatibility"""
+        return self.accounts
+
+    def save_accounts(self):
+        """Legacy method - now database auto-saves"""
+        # Database saves automatically, this is kept for compatibility
+        pass
     
     def log_message(self, message, account_phone=None):
         utc_plus_1 = timezone(timedelta(hours=2))
@@ -289,23 +327,24 @@ class WebTelegramForwarder:
             int(source_channel)
         except ValueError:
             return {"success": False, "error": "Source channel must be a number (ID)!"}
-        
-        for account in self.accounts:
-            if account['phone'] == phone:
-                return {"success": False, "error": "This phone number is already added!"}
-        
+
+        # Check if account exists in database
+        existing = self.db.get_account_by_phone(phone)
+        if existing:
+            return {"success": False, "error": "This phone number is already added!"}
+
         if not target_channels:
             return {"success": False, "error": "Add at least one target channel ID!"}
-        
+
         for channel in target_channels:
             try:
                 int(channel)
             except ValueError:
                 return {"success": False, "error": f"Target channel '{channel}' must be a number (ID)!"}
-        
+
         session_name = f"session_{phone.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')}"
         session_path = session_name
-        
+
         new_account = {
             "api_id": api_id,
             "api_hash": api_hash,
@@ -316,38 +355,45 @@ class WebTelegramForwarder:
             "status": "Added",
             "session_file": session_path
         }
-        
-        self.accounts.append(new_account)
-        self.save_accounts()
-        
-        self.log_message(f"New account added: {account_name or phone} ({len(target_channels)} channels)")
-        return {"success": True, "message": f"Account added! {len(target_channels)} target channels set."}
+
+        # Save to database
+        try:
+            saved_account = self.db.add_account(new_account)
+            # Reload accounts from database
+            self.reload_accounts()
+
+            self.log_message(f"New account added: {account_name or phone} ({len(target_channels)} channels)")
+            return {"success": True, "message": f"Account added! {len(target_channels)} target channels set."}
+        except Exception as e:
+            self.logger.error(f"Failed to add account: {str(e)}")
+            return {"success": False, "error": f"Failed to add account: {str(e)}"}
     
     def remove_account(self, phone):
-        accounts_to_remove = []
-        for acc in self.accounts:
-            acc_phone = str(acc['phone']).strip()
-            if (acc_phone == phone or 
-                acc_phone.replace('+', '') == phone.replace('+', '') or
-                acc_phone.replace('+', '').replace(' ', '') == phone.replace('+', '').replace(' ', '')):
-                accounts_to_remove.append(acc)
-        
-        if not accounts_to_remove:
+        # Find account in database
+        account = self.db.get_account_by_phone(phone)
+
+        if not account:
             return {"success": False, "error": "Account not found!"}
-        
-        for acc_to_remove in accounts_to_remove:
-            session_file = f"{acc_to_remove['session_file']}.session"
-            if os.path.exists(session_file):
-                try:
-                    os.remove(session_file)
-                    self.log_message(f"Session file removed: {session_file}")
-                except Exception as e:
-                    self.log_message(f"Error removing session file: {str(e)}")
-            
-            self.accounts.remove(acc_to_remove)
-        
-        self.save_accounts()
-        
+
+        # Remove session file if exists
+        session_file = f"{account['session_file']}.session"
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+                self.log_message(f"Session file removed: {session_file}")
+            except Exception as e:
+                self.log_message(f"Error removing session file: {str(e)}")
+
+        # Delete from database
+        try:
+            self.db.delete_account(phone)
+            # Reload accounts from database
+            self.reload_accounts()
+        except Exception as e:
+            self.logger.error(f"Failed to delete account: {str(e)}")
+            return {"success": False, "error": f"Failed to delete account: {str(e)}"}
+
+        # Disconnect client
         for phone_variant in [phone, phone.replace('+', ''), f"+{phone}"]:
             if phone_variant in self.clients:
                 try:
@@ -358,39 +404,45 @@ class WebTelegramForwarder:
                     break
                 except Exception as e:
                     self.log_message(f"Error disconnecting client: {str(e)}")
-        
+
         self.entity_cache.clear()
-        
+
         self.log_message(f"Account removed: {phone}")
         return {"success": True, "message": f"{phone} account removed!"}
     
     def remove_selected_channels(self, selected_channels):
         if not selected_channels:
             return {"success": False, "error": "No channels selected!"}
-        
+
         removed_count = 0
-        
-        for account in self.accounts:
-            phone = account['phone']
-            if phone in selected_channels:
-                channels_to_remove = selected_channels[phone]
-                original_count = len(account['target_channels'])
-                
-                account['target_channels'] = [ch for ch in account['target_channels'] if ch not in channels_to_remove]
-                
-                removed_from_this_account = original_count - len(account['target_channels'])
-                removed_count += removed_from_this_account
-                
+
+        for phone, channels_to_remove in selected_channels.items():
+            account = self.db.get_account_by_phone(phone)
+            if not account:
+                continue
+
+            original_count = len(account['target_channels'])
+            new_channels = [ch for ch in account['target_channels'] if ch not in channels_to_remove]
+
+            removed_from_this_account = original_count - len(new_channels)
+            removed_count += removed_from_this_account
+
+            # Update in database
+            try:
+                self.db.update_account(phone, {'target_channels': new_channels})
                 self.log_message(f"Removed {removed_from_this_account} channels from {phone}")
-        
-        self.save_accounts()
+            except Exception as e:
+                self.logger.error(f"Failed to update channels for {phone}: {str(e)}")
+
+        # Reload accounts from database
+        self.reload_accounts()
         self.log_message(f"Total channels removed: {removed_count}")
-        
+
         try:
             socketio.emit('accounts_updated', self.get_accounts_data())
         except:
             pass
-        
+
         return {"success": True, "message": f"Removed {removed_count} channels successfully!"}
     
     def get_accounts_data(self):
@@ -1025,21 +1077,26 @@ class WebTelegramForwarder:
                     channel_posts[phone] = []
                 channel_posts[phone].append({'channel': channel, 'post_id': selected_post_id})
             
-            scheduled_post = {
-                "id": len(self.scheduled_posts) + 1,
+            scheduled_post_data = {
                 "posts": channel_posts,
                 "datetime": slot_datetime,
-                "status": "Pending",
-                "created": current_time
+                "status": "Pending"
             }
-            
-            self.scheduled_posts.append(scheduled_post)
-            created_posts.append(scheduled_post)
+
+            # Save to database
+            try:
+                saved_post = self.db.add_scheduled_post(scheduled_post_data)
+                created_posts.append(saved_post)
+            except Exception as e:
+                self.logger.error(f"Failed to save scheduled post: {str(e)}")
         
         if created_posts:
+            # Reload scheduled posts from database
+            self.reload_scheduled_posts()
+
             total_channels = len(all_channels)
             self.log_message(f"Created {len(created_posts)} scheduled posts with {total_channels} channels each")
-            
+
             if not self.scheduler_running and self.loop and self.clients:
                 self.log_message("Auto-starting scheduler for new posts")
                 self.scheduler_running = True
@@ -1048,12 +1105,12 @@ class WebTelegramForwarder:
                     socketio.emit('scheduler_status', {'running': True})
                 except:
                     pass
-            
+
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
-            
+
             return {"success": True, "message": f"Created {len(created_posts)} scheduled posts!"}
         else:
             return {"success": False, "error": "No valid time slots created!"}    
@@ -1082,13 +1139,22 @@ class WebTelegramForwarder:
         return posts_data
     
     def remove_scheduled_post(self, post_id):
-        self.scheduled_posts = [p for p in self.scheduled_posts if p['id'] != post_id]
+        # Delete from database
         try:
-            socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
-        except:
-            pass
-        self.log_message(f"Scheduled post removed: ID {post_id}")
-        return {"success": True, "message": "Scheduled post removed"}
+            self.db.delete_scheduled_post(post_id)
+            # Reload from database
+            self.reload_scheduled_posts()
+
+            try:
+                socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
+            except:
+                pass
+
+            self.log_message(f"Scheduled post removed: ID {post_id}")
+            return {"success": True, "message": "Scheduled post removed"}
+        except Exception as e:
+            self.logger.error(f"Failed to remove scheduled post: {str(e)}")
+            return {"success": False, "error": f"Failed to remove post: {str(e)}"}
     
     def start_scheduler(self):
         if not self.scheduled_posts:
@@ -1378,6 +1444,15 @@ class WebTelegramForwarder:
                     for error_type, count in sorted(error_summary.items(), key=lambda x: x[1], reverse=True):
                         self.log_message(f"   • {error_type}: {count} channel(s)")
 
+            # Update status in database
+            try:
+                self.db.update_scheduled_post(post['id'], {
+                    'status': post['status'],
+                    'sent_at': datetime.utcnow() if post['status'] == 'Sent' else None
+                })
+            except Exception as db_error:
+                self.logger.error(f"Failed to update post status in database: {str(db_error)}")
+
             self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
             try:
@@ -1390,6 +1465,16 @@ class WebTelegramForwarder:
             self.log_message(f"❌ CRITICAL ERROR in scheduled post: {type(e).__name__} - {str(e)}")
             import traceback
             self.log_message(f"Stack trace: {traceback.format_exc()}")
+
+            # Update error status in database
+            try:
+                self.db.update_scheduled_post(post['id'], {
+                    'status': 'Error',
+                    'error_message': str(e)
+                })
+            except Exception as db_error:
+                self.logger.error(f"Failed to update error status in database: {str(db_error)}")
+
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
