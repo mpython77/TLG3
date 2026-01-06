@@ -1182,59 +1182,105 @@ class WebTelegramForwarder:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
-            
+
             self.log_message(f"Starting to send scheduled post ID {post['id']}")
-            
+
             success_count = 0
             total_count = 0
-            
+            failed_channels = []
+
             for phone, channels_data in post['posts'].items():
                 if phone not in self.clients:
                     self.log_message(f"Account not connected: {phone}")
+                    for ch_info in channels_data:
+                        failed_channels.append(f"{phone}:{ch_info['channel']} (Not connected)")
                     continue
-                
+
                 client = self.clients[phone]
                 self.log_message(f"Using account {phone} for {len(channels_data)} channels")
-                
+
                 for ch_info in channels_data:
                     channel = ch_info['channel']
                     post_id = ch_info['post_id']
                     total_count += 1
-                    
-                    try:
-                        delay = random.uniform(self.min_delay, self.max_delay)
-                        self.log_message(f"Waiting {delay:.1f} seconds before sending to channel {channel}", phone)
-                        await asyncio.sleep(delay)
-                        
-                        await self.send_single_scheduled_post(client, post_id, channel, phone)
-                        success_count += 1
-                        self.log_message(f"✓ Successfully sent post {post_id} to channel {channel}", phone)
-                        
-                    except FloodWaitError as e:
-                        self.log_message(f"✗ FloodWait {e.seconds}s for channel {channel} - Try increasing delay", phone)
-                    except ChannelPrivateError:
-                        self.log_message(f"✗ Channel {channel} is private or bot not member", phone)
-                    except UserBannedInChannelError:
-                        self.log_message(f"✗ User banned in channel {channel}", phone)
-                    except Exception as e:
-                        error_type = type(e).__name__
-                        self.log_message(f"✗ Failed channel {channel}: {error_type} - {str(e)}", phone)
-            
+
+                    # Try sending with retry mechanism
+                    retry_count = 0
+                    max_retries = 3
+                    sent = False
+
+                    while retry_count < max_retries and not sent:
+                        try:
+                            # Base delay between posts
+                            delay = random.uniform(self.min_delay, self.max_delay)
+
+                            # Add extra delay if this is a retry
+                            if retry_count > 0:
+                                retry_delay = retry_count * 10
+                                self.log_message(f"Retry {retry_count}/{max_retries} - Adding {retry_delay}s delay for channel {channel}", phone)
+                                delay += retry_delay
+
+                            self.log_message(f"Waiting {delay:.1f} seconds before sending to channel {channel}", phone)
+                            await asyncio.sleep(delay)
+
+                            await self.send_single_scheduled_post(client, post_id, channel, phone)
+                            success_count += 1
+                            sent = True
+                            self.log_message(f"✓ Successfully sent post {post_id} to channel {channel}", phone)
+
+                        except FloodWaitError as e:
+                            wait_time = e.seconds
+                            self.log_message(f"⚠ FloodWait {wait_time}s for channel {channel} - Waiting...", phone)
+
+                            # Wait the required time + small buffer
+                            await asyncio.sleep(wait_time + 5)
+                            retry_count += 1
+
+                            if retry_count >= max_retries:
+                                failed_channels.append(f"{phone}:{channel} (FloodWait {wait_time}s)")
+                                self.log_message(f"✗ Max retries reached for channel {channel} due to FloodWait", phone)
+
+                        except ChannelPrivateError:
+                            failed_channels.append(f"{phone}:{channel} (Private/Not member)")
+                            self.log_message(f"✗ Channel {channel} is private or bot not member", phone)
+                            break  # No point retrying this
+
+                        except UserBannedInChannelError:
+                            failed_channels.append(f"{phone}:{channel} (User banned)")
+                            self.log_message(f"✗ User banned in channel {channel}", phone)
+                            break  # No point retrying this
+
+                        except Exception as e:
+                            error_type = type(e).__name__
+                            error_msg = str(e)
+
+                            retry_count += 1
+                            if retry_count >= max_retries:
+                                failed_channels.append(f"{phone}:{channel} ({error_type})")
+                                self.log_message(f"✗ Failed channel {channel} after {max_retries} retries: {error_type} - {error_msg}", phone)
+                            else:
+                                self.log_message(f"⚠ Error on channel {channel}, retry {retry_count}/{max_retries}: {error_type}", phone)
+
+            # Final status update
             if success_count == total_count and total_count > 0:
                 post['status'] = 'Sent'
-                self.log_message(f"Post {post['id']} fully sent: {success_count}/{total_count} successful")
+                self.log_message(f"✓ Post {post['id']} fully sent: {success_count}/{total_count} successful")
             elif success_count > 0:
                 post['status'] = f'Partial ({success_count}/{total_count})'
-                self.log_message(f"Post {post['id']} partially sent: {success_count}/{total_count} successful")
+                self.log_message(f"⚠ Post {post['id']} partially sent: {success_count}/{total_count} successful")
+                if failed_channels:
+                    self.log_message(f"Failed channels: {', '.join(failed_channels)}")
             else:
                 post['status'] = 'Error'
-                self.log_message(f"Post {post['id']} failed: 0/{total_count} successful")
-            
+                self.log_message(f"✗ Post {post['id']} failed: 0/{total_count} successful")
+                if failed_channels:
+                    self.log_message(f"All failed: {', '.join(failed_channels)}")
+
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
-            
+
         except Exception as e:
             post['status'] = 'Error'
             self.log_message(f"Scheduled post general error: {str(e)}")
