@@ -9,6 +9,7 @@ import logging
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, emit
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, ChannelPrivateError, UserBannedInChannelError
 from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 import re
@@ -595,11 +596,11 @@ class WebTelegramForwarder:
     
     async def connect_single_account_sequential(self, account):
         phone = account['phone']
-        
+
         try:
             self.log_message(f"Initiating connection...", phone)
             account['status'] = 'Connecting...'
-            
+
             if phone in self.clients:
                 try:
                     old_client = self.clients[phone]
@@ -608,9 +609,21 @@ class WebTelegramForwarder:
                     await asyncio.sleep(0.5)
                 except Exception as cleanup_error:
                     self.log_message(f"Cleanup error (continuing): {str(cleanup_error)}", phone)
-            
+
+            # Check if session_string exists in database
+            db_account = self.db.get_account_by_phone(phone)
+            session_string = db_account.get('session_string') if db_account else None
+
+            # Use StringSession if available, otherwise use file-based session
+            if session_string:
+                self.log_message(f"Using saved session string", phone)
+                session = StringSession(session_string)
+            else:
+                self.log_message(f"Using file-based session", phone)
+                session = account['session_file']
+
             client = TelegramClient(
-                account['session_file'],
+                session,
                 int(account['api_id']),
                 account['api_hash'],
                 timeout=20,
@@ -648,7 +661,15 @@ class WebTelegramForwarder:
             self.clients[phone] = client
             account['status'] = 'Connected'
             self.log_message(f"Connected successfully: {me.first_name}", phone)
-            
+
+            # Save session string to database for persistence
+            try:
+                session_str = client.session.save()
+                self.db.update_account(phone, {'session_string': session_str})
+                self.log_message(f"✅ Session string saved to database", phone)
+            except Exception as save_err:
+                self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
             try:
                 source_entity = await self.get_entity_safe(client, account['source_channel'], phone)
                 self.log_message(f"Source channel verified: {source_entity.title if hasattr(source_entity, 'title') else 'Channel'}", phone)
@@ -678,8 +699,14 @@ class WebTelegramForwarder:
                 await asyncio.sleep(3)
                 
                 try:
+                    # Use StringSession if available for retry too
+                    if session_string:
+                        retry_session = StringSession(session_string)
+                    else:
+                        retry_session = account['session_file']
+
                     retry_client = TelegramClient(
-                        account['session_file'],
+                        retry_session,
                         int(account['api_id']),
                         account['api_hash'],
                         timeout=20,
@@ -687,14 +714,23 @@ class WebTelegramForwarder:
                         auto_reconnect=True,
                         connection_retries=3
                     )
-                    
+
                     await asyncio.wait_for(retry_client.connect(), timeout=15.0)
-                    
+
                     if await retry_client.is_user_authorized():
                         me = await retry_client.get_me()
                         self.clients[phone] = retry_client
                         account['status'] = 'Connected'
                         self.log_message(f"Connected after retry: {me.first_name}", phone)
+
+                        # Save session string to database
+                        try:
+                            session_str = retry_client.session.save()
+                            self.db.update_account(phone, {'session_string': session_str})
+                            self.log_message(f"✅ Session string saved to database", phone)
+                        except Exception as save_err:
+                            self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
                         return 'success'
                     else:
                         account['status'] = 'Auth required after retry'
@@ -744,21 +780,29 @@ class WebTelegramForwarder:
     async def process_auth_code(self, account, client, code, phone):
         try:
             await client.sign_in(phone, code)
-            
+
             me = await client.get_me()
             self.clients[phone] = client
             account['status'] = 'Connected'
             self.log_message(f"Authentication successful: {me.first_name}", phone)
-            
+
+            # Save session string to database after successful authentication
+            try:
+                session_str = client.session.save()
+                self.db.update_account(phone, {'session_string': session_str})
+                self.log_message(f"✅ Session string saved to database", phone)
+            except Exception as save_err:
+                self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
             if phone in self.pending_auth:
                 del self.pending_auth[phone]
-            
+
             try:
                 socketio.emit('auth_success', {'phone': phone})
                 socketio.emit('accounts_updated', self.get_accounts_data())
             except:
                 pass
-            
+
             if self.connection_paused and self.connection_in_progress:
                 self.log_message("Resuming connection process...")
                 await asyncio.sleep(1)
@@ -818,21 +862,29 @@ class WebTelegramForwarder:
     async def process_auth_password(self, account, client, password, phone):
         try:
             await client.sign_in(password=password)
-            
+
             me = await client.get_me()
             self.clients[phone] = client
             account['status'] = 'Connected'
             self.log_message(f"2FA authentication successful: {me.first_name}", phone)
-            
+
+            # Save session string to database after successful 2FA authentication
+            try:
+                session_str = client.session.save()
+                self.db.update_account(phone, {'session_string': session_str})
+                self.log_message(f"✅ Session string saved to database", phone)
+            except Exception as save_err:
+                self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
             if phone in self.pending_auth:
                 del self.pending_auth[phone]
-            
+
             try:
                 socketio.emit('auth_success', {'phone': phone})
                 socketio.emit('accounts_updated', self.get_accounts_data())
             except:
                 pass
-            
+
             if self.connection_paused and self.connection_in_progress:
                 self.log_message("Resuming connection process...")
                 await asyncio.sleep(1)
