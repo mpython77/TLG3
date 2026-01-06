@@ -131,6 +131,9 @@ class DatabaseManager:
             session_factory = sessionmaker(bind=self.engine)
             self.Session = scoped_session(session_factory)
 
+            # Check and fix schema if needed
+            self._ensure_correct_schema()
+
             # Create all tables
             Base.metadata.create_all(self.engine)
 
@@ -142,6 +145,28 @@ class DatabaseManager:
             logger.error(f"❌ Database connection failed: {str(e)}")
             logger.error("Please check your DATABASE_URL configuration")
             raise
+
+    def _ensure_correct_schema(self):
+        """Ensure database schema is correct, drop and recreate if needed"""
+        try:
+            from sqlalchemy import inspect, text
+
+            inspector = inspect(self.engine)
+
+            # Check if scheduled_posts table exists
+            if 'scheduled_posts' in inspector.get_table_names():
+                columns = [col['name'] for col in inspector.get_columns('scheduled_posts')]
+
+                # If posts_data column doesn't exist, drop the table
+                if 'posts_data' not in columns:
+                    logger.warning("⚠️  Scheduled posts table has old schema, dropping and recreating...")
+                    with self.engine.connect() as conn:
+                        conn.execute(text('DROP TABLE IF EXISTS scheduled_posts CASCADE'))
+                        conn.commit()
+                    logger.info("✅ Old scheduled_posts table dropped")
+
+        except Exception as e:
+            logger.warning(f"⚠️  Schema check failed (continuing): {str(e)}")
 
     def get_session(self):
         """Get a new database session"""
