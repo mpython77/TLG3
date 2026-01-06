@@ -619,13 +619,14 @@ class WebTelegramForwarder:
             # Check if session_string exists in account (already loaded from database)
             session_string = account.get('session_string')
 
-            # Use StringSession if available, otherwise use file-based session
+            # ALWAYS use StringSession (never file-based session)
+            # This ensures session.save() works correctly and returns a string
             if session_string:
-                self.log_message(f"✅ Using saved session string from database", phone)
+                self.log_message(f"✅ Using saved session string from database (length: {len(session_string)})", phone)
                 session = StringSession(session_string)
             else:
-                self.log_message(f"⚠️  No saved session - using file-based session", phone)
-                session = account['session_file']
+                self.log_message(f"⚠️  No saved session - creating new StringSession", phone)
+                session = StringSession()  # Empty StringSession for new authentication
 
             client = TelegramClient(
                 session,
@@ -712,11 +713,11 @@ class WebTelegramForwarder:
                 await asyncio.sleep(3)
                 
                 try:
-                    # Use StringSession if available for retry too
+                    # ALWAYS use StringSession for retry too
                     if session_string:
                         retry_session = StringSession(session_string)
                     else:
-                        retry_session = account['session_file']
+                        retry_session = StringSession()  # Empty StringSession for new authentication
 
                     retry_client = TelegramClient(
                         retry_session,
