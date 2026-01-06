@@ -110,27 +110,7 @@ class AuthManager:
 
 class WebTelegramForwarder:
     def __init__(self):
-        # Initialize database connection
-        try:
-            self.db = get_db()
-            self.log_message("✅ PostgreSQL connected successfully")
-
-            # Migrate from JSON if exists
-            json_file = 'accounts_config.json'
-            if os.path.exists(json_file):
-                self.log_message(f"📦 Found {json_file}, migrating to PostgreSQL...")
-                migrated = self.db.migrate_from_json(json_file)
-                if migrated > 0:
-                    self.log_message(f"✅ Migrated {migrated} accounts to PostgreSQL")
-                    # Backup and remove JSON file
-                    import shutil
-                    shutil.move(json_file, f"{json_file}.backup")
-                    self.log_message(f"📦 JSON file backed up to {json_file}.backup")
-        except Exception as e:
-            print(f"❌ Database initialization failed: {str(e)}")
-            print("Please configure DATABASE_URL environment variable")
-            raise
-
+        # First initialize all basic attributes
         self.config_file = 'accounts_config.json'  # Keep for backward compatibility
         self.accounts = []  # Will be loaded from database
         self.clients = {}
@@ -173,6 +153,27 @@ class WebTelegramForwarder:
             ]
         )
         self.logger = logging.getLogger(__name__)
+
+        # Now initialize database connection (after log_history is set)
+        try:
+            self.db = get_db()
+            self.log_message("✅ PostgreSQL connected successfully")
+
+            # Migrate from JSON if exists
+            json_file = 'accounts_config.json'
+            if os.path.exists(json_file):
+                self.log_message(f"📦 Found {json_file}, migrating to PostgreSQL...")
+                migrated = self.db.migrate_from_json(json_file)
+                if migrated > 0:
+                    self.log_message(f"✅ Migrated {migrated} accounts to PostgreSQL")
+                    # Backup and remove JSON file
+                    import shutil
+                    shutil.move(json_file, f"{json_file}.backup")
+                    self.log_message(f"📦 JSON file backed up to {json_file}.backup")
+        except Exception as e:
+            print(f"❌ Database initialization failed: {str(e)}")
+            print("Please configure DATABASE_URL environment variable")
+            raise
 
         # Load accounts from database
         self.reload_accounts()
