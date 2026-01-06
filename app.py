@@ -9,10 +9,12 @@ import logging
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, emit
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, ChannelPrivateError, UserBannedInChannelError
 from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 import re
 import hashlib
+from database import get_db, DatabaseManager
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-this-in-production')
@@ -109,40 +111,41 @@ class AuthManager:
 
 class WebTelegramForwarder:
     def __init__(self):
-        self.config_file = 'accounts_config.json'
-        self.accounts = self.load_accounts()
+        # First initialize all basic attributes
+        self.config_file = 'accounts_config.json'  # Keep for backward compatibility
+        self.accounts = []  # Will be loaded from database
         self.clients = {}
         self.running = False
-        
+
         self.min_delay = 15
         self.max_delay = 25
         self.last_forward_time = {}
-        
+
         self.connection_queue = []
         self.current_connecting_phone = None
         self.connection_in_progress = False
         self.connection_paused = False
-        
-        self.scheduled_posts = []
+
+        self.scheduled_posts = []  # Will be loaded from database
         self.scheduler_running = False
         self.used_post_ids = set()
-        
+
         self.active_tasks = set()
         self.connection_semaphore = None
-        
+
         self.loop = None
         self.loop_thread = None
-        
+
         self.pending_auth = {}
-        
+
         self.log_history = []
         self.scan_history = []
         self.max_history_size = 500
-        
+
         self.entity_cache = {}
-        
+
         self.scanned_ids = {}
-        
+
         logging.basicConfig(
             format='%(asctime)s - %(levelname)s - %(message)s',
             level=logging.WARNING,
@@ -151,7 +154,34 @@ class WebTelegramForwarder:
             ]
         )
         self.logger = logging.getLogger(__name__)
-        
+
+        # Now initialize database connection (after log_history is set)
+        try:
+            self.db = get_db()
+            self.log_message("✅ PostgreSQL connected successfully")
+
+            # Migrate from JSON if exists
+            json_file = 'accounts_config.json'
+            if os.path.exists(json_file):
+                self.log_message(f"📦 Found {json_file}, migrating to PostgreSQL...")
+                migrated = self.db.migrate_from_json(json_file)
+                if migrated > 0:
+                    self.log_message(f"✅ Migrated {migrated} accounts to PostgreSQL")
+                    # Backup and remove JSON file
+                    import shutil
+                    shutil.move(json_file, f"{json_file}.backup")
+                    self.log_message(f"📦 JSON file backed up to {json_file}.backup")
+        except Exception as e:
+            print(f"❌ Database initialization failed: {str(e)}")
+            print("Please configure DATABASE_URL environment variable")
+            raise
+
+        # Load accounts from database
+        self.reload_accounts()
+
+        # Load scheduled posts from database
+        self.reload_scheduled_posts()
+
         self.start_async_loop()
         
     def start_async_loop(self):
@@ -169,22 +199,32 @@ class WebTelegramForwarder:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
         
-    def load_accounts(self):
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return []
-        return []
-    
-    def save_accounts(self):
+    def reload_accounts(self):
+        """Load accounts from PostgreSQL database"""
         try:
-            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.accounts, f, indent=2, ensure_ascii=False)
+            self.accounts = self.db.get_all_accounts()
+            self.logger.info(f"📥 Loaded {len(self.accounts)} accounts from database")
         except Exception as e:
-            self.logger.error(f"Error saving accounts: {e}")
+            self.logger.error(f"❌ Failed to load accounts: {str(e)}")
+            self.accounts = []
+
+    def reload_scheduled_posts(self):
+        """Load scheduled posts from PostgreSQL database"""
+        try:
+            self.scheduled_posts = self.db.get_all_scheduled_posts()
+            self.logger.info(f"📥 Loaded {len(self.scheduled_posts)} scheduled posts from database")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load scheduled posts: {str(e)}")
+            self.scheduled_posts = []
+
+    def load_accounts(self):
+        """Legacy method for backward compatibility"""
+        return self.accounts
+
+    def save_accounts(self):
+        """Legacy method - now database auto-saves"""
+        # Database saves automatically, this is kept for compatibility
+        pass
     
     def log_message(self, message, account_phone=None):
         utc_plus_1 = timezone(timedelta(hours=2))
@@ -289,23 +329,24 @@ class WebTelegramForwarder:
             int(source_channel)
         except ValueError:
             return {"success": False, "error": "Source channel must be a number (ID)!"}
-        
-        for account in self.accounts:
-            if account['phone'] == phone:
-                return {"success": False, "error": "This phone number is already added!"}
-        
+
+        # Check if account exists in database
+        existing = self.db.get_account_by_phone(phone)
+        if existing:
+            return {"success": False, "error": "This phone number is already added!"}
+
         if not target_channels:
             return {"success": False, "error": "Add at least one target channel ID!"}
-        
+
         for channel in target_channels:
             try:
                 int(channel)
             except ValueError:
                 return {"success": False, "error": f"Target channel '{channel}' must be a number (ID)!"}
-        
+
         session_name = f"session_{phone.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')}"
         session_path = session_name
-        
+
         new_account = {
             "api_id": api_id,
             "api_hash": api_hash,
@@ -316,38 +357,45 @@ class WebTelegramForwarder:
             "status": "Added",
             "session_file": session_path
         }
-        
-        self.accounts.append(new_account)
-        self.save_accounts()
-        
-        self.log_message(f"New account added: {account_name or phone} ({len(target_channels)} channels)")
-        return {"success": True, "message": f"Account added! {len(target_channels)} target channels set."}
+
+        # Save to database
+        try:
+            saved_account = self.db.add_account(new_account)
+            # Reload accounts from database
+            self.reload_accounts()
+
+            self.log_message(f"New account added: {account_name or phone} ({len(target_channels)} channels)")
+            return {"success": True, "message": f"Account added! {len(target_channels)} target channels set."}
+        except Exception as e:
+            self.logger.error(f"Failed to add account: {str(e)}")
+            return {"success": False, "error": f"Failed to add account: {str(e)}"}
     
     def remove_account(self, phone):
-        accounts_to_remove = []
-        for acc in self.accounts:
-            acc_phone = str(acc['phone']).strip()
-            if (acc_phone == phone or 
-                acc_phone.replace('+', '') == phone.replace('+', '') or
-                acc_phone.replace('+', '').replace(' ', '') == phone.replace('+', '').replace(' ', '')):
-                accounts_to_remove.append(acc)
-        
-        if not accounts_to_remove:
+        # Find account in database
+        account = self.db.get_account_by_phone(phone)
+
+        if not account:
             return {"success": False, "error": "Account not found!"}
-        
-        for acc_to_remove in accounts_to_remove:
-            session_file = f"{acc_to_remove['session_file']}.session"
-            if os.path.exists(session_file):
-                try:
-                    os.remove(session_file)
-                    self.log_message(f"Session file removed: {session_file}")
-                except Exception as e:
-                    self.log_message(f"Error removing session file: {str(e)}")
-            
-            self.accounts.remove(acc_to_remove)
-        
-        self.save_accounts()
-        
+
+        # Remove session file if exists
+        session_file = f"{account['session_file']}.session"
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+                self.log_message(f"Session file removed: {session_file}")
+            except Exception as e:
+                self.log_message(f"Error removing session file: {str(e)}")
+
+        # Delete from database
+        try:
+            self.db.delete_account(phone)
+            # Reload accounts from database
+            self.reload_accounts()
+        except Exception as e:
+            self.logger.error(f"Failed to delete account: {str(e)}")
+            return {"success": False, "error": f"Failed to delete account: {str(e)}"}
+
+        # Disconnect client
         for phone_variant in [phone, phone.replace('+', ''), f"+{phone}"]:
             if phone_variant in self.clients:
                 try:
@@ -358,39 +406,45 @@ class WebTelegramForwarder:
                     break
                 except Exception as e:
                     self.log_message(f"Error disconnecting client: {str(e)}")
-        
+
         self.entity_cache.clear()
-        
+
         self.log_message(f"Account removed: {phone}")
         return {"success": True, "message": f"{phone} account removed!"}
     
     def remove_selected_channels(self, selected_channels):
         if not selected_channels:
             return {"success": False, "error": "No channels selected!"}
-        
+
         removed_count = 0
-        
-        for account in self.accounts:
-            phone = account['phone']
-            if phone in selected_channels:
-                channels_to_remove = selected_channels[phone]
-                original_count = len(account['target_channels'])
-                
-                account['target_channels'] = [ch for ch in account['target_channels'] if ch not in channels_to_remove]
-                
-                removed_from_this_account = original_count - len(account['target_channels'])
-                removed_count += removed_from_this_account
-                
+
+        for phone, channels_to_remove in selected_channels.items():
+            account = self.db.get_account_by_phone(phone)
+            if not account:
+                continue
+
+            original_count = len(account['target_channels'])
+            new_channels = [ch for ch in account['target_channels'] if ch not in channels_to_remove]
+
+            removed_from_this_account = original_count - len(new_channels)
+            removed_count += removed_from_this_account
+
+            # Update in database
+            try:
+                self.db.update_account(phone, {'target_channels': new_channels})
                 self.log_message(f"Removed {removed_from_this_account} channels from {phone}")
-        
-        self.save_accounts()
+            except Exception as e:
+                self.logger.error(f"Failed to update channels for {phone}: {str(e)}")
+
+        # Reload accounts from database
+        self.reload_accounts()
         self.log_message(f"Total channels removed: {removed_count}")
-        
+
         try:
             socketio.emit('accounts_updated', self.get_accounts_data())
         except:
             pass
-        
+
         return {"success": True, "message": f"Removed {removed_count} channels successfully!"}
     
     def get_accounts_data(self):
@@ -542,11 +596,11 @@ class WebTelegramForwarder:
     
     async def connect_single_account_sequential(self, account):
         phone = account['phone']
-        
+
         try:
             self.log_message(f"Initiating connection...", phone)
             account['status'] = 'Connecting...'
-            
+
             if phone in self.clients:
                 try:
                     old_client = self.clients[phone]
@@ -555,9 +609,20 @@ class WebTelegramForwarder:
                     await asyncio.sleep(0.5)
                 except Exception as cleanup_error:
                     self.log_message(f"Cleanup error (continuing): {str(cleanup_error)}", phone)
-            
+
+            # Check if session_string exists in account (already loaded from database)
+            session_string = account.get('session_string')
+
+            # Use StringSession if available, otherwise use file-based session
+            if session_string:
+                self.log_message(f"✅ Using saved session string from database", phone)
+                session = StringSession(session_string)
+            else:
+                self.log_message(f"⚠️  No saved session - using file-based session", phone)
+                session = account['session_file']
+
             client = TelegramClient(
-                account['session_file'],
+                session,
                 int(account['api_id']),
                 account['api_hash'],
                 timeout=20,
@@ -595,7 +660,15 @@ class WebTelegramForwarder:
             self.clients[phone] = client
             account['status'] = 'Connected'
             self.log_message(f"Connected successfully: {me.first_name}", phone)
-            
+
+            # Save session string to database for persistence
+            try:
+                session_str = client.session.save()
+                self.db.update_account(phone, {'session_string': session_str})
+                self.log_message(f"✅ Session string saved to database", phone)
+            except Exception as save_err:
+                self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
             try:
                 source_entity = await self.get_entity_safe(client, account['source_channel'], phone)
                 self.log_message(f"Source channel verified: {source_entity.title if hasattr(source_entity, 'title') else 'Channel'}", phone)
@@ -625,8 +698,14 @@ class WebTelegramForwarder:
                 await asyncio.sleep(3)
                 
                 try:
+                    # Use StringSession if available for retry too
+                    if session_string:
+                        retry_session = StringSession(session_string)
+                    else:
+                        retry_session = account['session_file']
+
                     retry_client = TelegramClient(
-                        account['session_file'],
+                        retry_session,
                         int(account['api_id']),
                         account['api_hash'],
                         timeout=20,
@@ -634,14 +713,23 @@ class WebTelegramForwarder:
                         auto_reconnect=True,
                         connection_retries=3
                     )
-                    
+
                     await asyncio.wait_for(retry_client.connect(), timeout=15.0)
-                    
+
                     if await retry_client.is_user_authorized():
                         me = await retry_client.get_me()
                         self.clients[phone] = retry_client
                         account['status'] = 'Connected'
                         self.log_message(f"Connected after retry: {me.first_name}", phone)
+
+                        # Save session string to database
+                        try:
+                            session_str = retry_client.session.save()
+                            self.db.update_account(phone, {'session_string': session_str})
+                            self.log_message(f"✅ Session string saved to database", phone)
+                        except Exception as save_err:
+                            self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
                         return 'success'
                     else:
                         account['status'] = 'Auth required after retry'
@@ -691,21 +779,29 @@ class WebTelegramForwarder:
     async def process_auth_code(self, account, client, code, phone):
         try:
             await client.sign_in(phone, code)
-            
+
             me = await client.get_me()
             self.clients[phone] = client
             account['status'] = 'Connected'
             self.log_message(f"Authentication successful: {me.first_name}", phone)
-            
+
+            # Save session string to database after successful authentication
+            try:
+                session_str = client.session.save()
+                self.db.update_account(phone, {'session_string': session_str})
+                self.log_message(f"✅ Session string saved to database", phone)
+            except Exception as save_err:
+                self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
             if phone in self.pending_auth:
                 del self.pending_auth[phone]
-            
+
             try:
                 socketio.emit('auth_success', {'phone': phone})
                 socketio.emit('accounts_updated', self.get_accounts_data())
             except:
                 pass
-            
+
             if self.connection_paused and self.connection_in_progress:
                 self.log_message("Resuming connection process...")
                 await asyncio.sleep(1)
@@ -765,21 +861,29 @@ class WebTelegramForwarder:
     async def process_auth_password(self, account, client, password, phone):
         try:
             await client.sign_in(password=password)
-            
+
             me = await client.get_me()
             self.clients[phone] = client
             account['status'] = 'Connected'
             self.log_message(f"2FA authentication successful: {me.first_name}", phone)
-            
+
+            # Save session string to database after successful 2FA authentication
+            try:
+                session_str = client.session.save()
+                self.db.update_account(phone, {'session_string': session_str})
+                self.log_message(f"✅ Session string saved to database", phone)
+            except Exception as save_err:
+                self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
+
             if phone in self.pending_auth:
                 del self.pending_auth[phone]
-            
+
             try:
                 socketio.emit('auth_success', {'phone': phone})
                 socketio.emit('accounts_updated', self.get_accounts_data())
             except:
                 pass
-            
+
             if self.connection_paused and self.connection_in_progress:
                 self.log_message("Resuming connection process...")
                 await asyncio.sleep(1)
@@ -1025,21 +1129,26 @@ class WebTelegramForwarder:
                     channel_posts[phone] = []
                 channel_posts[phone].append({'channel': channel, 'post_id': selected_post_id})
             
-            scheduled_post = {
-                "id": len(self.scheduled_posts) + 1,
+            scheduled_post_data = {
                 "posts": channel_posts,
                 "datetime": slot_datetime,
-                "status": "Pending",
-                "created": current_time
+                "status": "Pending"
             }
-            
-            self.scheduled_posts.append(scheduled_post)
-            created_posts.append(scheduled_post)
+
+            # Save to database
+            try:
+                saved_post = self.db.add_scheduled_post(scheduled_post_data)
+                created_posts.append(saved_post)
+            except Exception as e:
+                self.logger.error(f"Failed to save scheduled post: {str(e)}")
         
         if created_posts:
+            # Reload scheduled posts from database
+            self.reload_scheduled_posts()
+
             total_channels = len(all_channels)
             self.log_message(f"Created {len(created_posts)} scheduled posts with {total_channels} channels each")
-            
+
             if not self.scheduler_running and self.loop and self.clients:
                 self.log_message("Auto-starting scheduler for new posts")
                 self.scheduler_running = True
@@ -1048,12 +1157,12 @@ class WebTelegramForwarder:
                     socketio.emit('scheduler_status', {'running': True})
                 except:
                     pass
-            
+
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
-            
+
             return {"success": True, "message": f"Created {len(created_posts)} scheduled posts!"}
         else:
             return {"success": False, "error": "No valid time slots created!"}    
@@ -1082,13 +1191,22 @@ class WebTelegramForwarder:
         return posts_data
     
     def remove_scheduled_post(self, post_id):
-        self.scheduled_posts = [p for p in self.scheduled_posts if p['id'] != post_id]
+        # Delete from database
         try:
-            socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
-        except:
-            pass
-        self.log_message(f"Scheduled post removed: ID {post_id}")
-        return {"success": True, "message": "Scheduled post removed"}
+            self.db.delete_scheduled_post(post_id)
+            # Reload from database
+            self.reload_scheduled_posts()
+
+            try:
+                socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
+            except:
+                pass
+
+            self.log_message(f"Scheduled post removed: ID {post_id}")
+            return {"success": True, "message": "Scheduled post removed"}
+        except Exception as e:
+            self.logger.error(f"Failed to remove scheduled post: {str(e)}")
+            return {"success": False, "error": f"Failed to remove post: {str(e)}"}
     
     def start_scheduler(self):
         if not self.scheduled_posts:
@@ -1182,62 +1300,233 @@ class WebTelegramForwarder:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
-            
-            self.log_message(f"Starting to send scheduled post ID {post['id']}")
-            
+
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            self.log_message(f"📤 Starting Post ID {post['id']} Delivery")
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
             success_count = 0
             total_count = 0
-            
+            failed_channels = []
+            error_summary = {}
+
             for phone, channels_data in post['posts'].items():
+                # Verify account connection
                 if phone not in self.clients:
-                    self.log_message(f"Account not connected: {phone}")
+                    error_msg = "ACCOUNT NOT CONNECTED"
+                    self.log_message(f"❌ {error_msg}: {phone}")
+                    for ch_info in channels_data:
+                        failed_channels.append(f"{phone}:{ch_info['channel']} ({error_msg})")
+                        error_summary[error_msg] = error_summary.get(error_msg, 0) + 1
                     continue
-                
+
                 client = self.clients[phone]
-                self.log_message(f"Using account {phone} for {len(channels_data)} channels")
-                
+
+                # Check if client is still connected
+                try:
+                    is_connected = await client.is_user_authorized()
+                    if not is_connected:
+                        error_msg = "ACCOUNT DISCONNECTED"
+                        self.log_message(f"❌ {error_msg}: {phone}")
+                        for ch_info in channels_data:
+                            failed_channels.append(f"{phone}:{ch_info['channel']} ({error_msg})")
+                            error_summary[error_msg] = error_summary.get(error_msg, 0) + 1
+                        continue
+                except Exception as e:
+                    error_msg = "CONNECTION CHECK FAILED"
+                    self.log_message(f"❌ {error_msg} for {phone}: {str(e)}")
+                    for ch_info in channels_data:
+                        failed_channels.append(f"{phone}:{ch_info['channel']} ({error_msg})")
+                        error_summary[error_msg] = error_summary.get(error_msg, 0) + 1
+                    continue
+
+                self.log_message(f"📱 Account {phone}: Processing {len(channels_data)} channels")
+
                 for ch_info in channels_data:
                     channel = ch_info['channel']
                     post_id = ch_info['post_id']
                     total_count += 1
-                    
-                    try:
-                        delay = random.uniform(self.min_delay, self.max_delay)
-                        self.log_message(f"Waiting {delay:.1f} seconds before sending to channel {channel}", phone)
-                        await asyncio.sleep(delay)
-                        
-                        await self.send_single_scheduled_post(client, post_id, channel, phone)
-                        success_count += 1
-                        self.log_message(f"✓ Successfully sent post {post_id} to channel {channel}", phone)
-                        
-                    except FloodWaitError as e:
-                        self.log_message(f"✗ FloodWait {e.seconds}s for channel {channel} - Try increasing delay", phone)
-                    except ChannelPrivateError:
-                        self.log_message(f"✗ Channel {channel} is private or bot not member", phone)
-                    except UserBannedInChannelError:
-                        self.log_message(f"✗ User banned in channel {channel}", phone)
-                    except Exception as e:
-                        error_type = type(e).__name__
-                        self.log_message(f"✗ Failed channel {channel}: {error_type} - {str(e)}", phone)
-            
+
+                    self.log_message(f"→ Channel {channel} | Post {post_id} | Attempt 1/{3}", phone)
+
+                    # Try sending with retry mechanism
+                    retry_count = 0
+                    max_retries = 3
+                    sent = False
+                    last_error = None
+
+                    while retry_count < max_retries and not sent:
+                        try:
+                            # Base delay between posts
+                            delay = random.uniform(self.min_delay, self.max_delay)
+
+                            # Add extra delay if this is a retry
+                            if retry_count > 0:
+                                retry_delay = retry_count * 15  # Increased from 10 to 15
+                                self.log_message(f"🔄 Retry {retry_count}/{max_retries} - Waiting {retry_delay}s extra for channel {channel}", phone)
+                                delay += retry_delay
+
+                            self.log_message(f"⏳ Waiting {delay:.1f}s before sending to channel {channel}", phone)
+                            await asyncio.sleep(delay)
+
+                            # Verify connection before each send
+                            if not await client.is_user_authorized():
+                                raise ConnectionError("Account disconnected during send")
+
+                            await self.send_single_scheduled_post(client, post_id, channel, phone)
+                            success_count += 1
+                            sent = True
+                            self.log_message(f"✅ SUCCESS | Channel {channel} | Post {post_id} sent", phone)
+
+                        except FloodWaitError as e:
+                            wait_time = e.seconds
+                            retry_count += 1
+
+                            error_category = "TELEGRAM_FLOOD_WAIT"
+                            self.log_message(f"⚠️  {error_category} | Channel {channel} | Wait: {wait_time}s | Attempt: {retry_count}/{max_retries}", phone)
+
+                            if retry_count < max_retries:
+                                # Wait the required time + buffer
+                                buffer = min(10, wait_time * 0.1)  # 10% buffer, max 10s
+                                total_wait = wait_time + buffer
+                                self.log_message(f"⏰ Waiting {total_wait:.0f}s (Telegram: {wait_time}s + Buffer: {buffer:.0f}s)", phone)
+                                await asyncio.sleep(total_wait)
+                            else:
+                                failed_channels.append(f"{phone}:{channel} (FloodWait {wait_time}s - max retries)")
+                                error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                                self.log_message(f"❌ FAILED | Channel {channel} | Max retries reached after FloodWait", phone)
+                                last_error = f"FloodWait {wait_time}s"
+
+                        except ChannelPrivateError as e:
+                            error_category = "CHANNEL_PRIVATE"
+                            self.log_message(f"❌ {error_category} | Channel {channel} | Not accessible or not a member", phone)
+                            failed_channels.append(f"{phone}:{channel} ({error_category})")
+                            error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                            last_error = "Channel is private or bot not member"
+                            break  # No point retrying this
+
+                        except UserBannedInChannelError as e:
+                            error_category = "USER_BANNED"
+                            self.log_message(f"❌ {error_category} | Channel {channel} | Account is banned", phone)
+                            failed_channels.append(f"{phone}:{channel} ({error_category})")
+                            error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                            last_error = "User banned in channel"
+                            break  # No point retrying this
+
+                        except ConnectionError as e:
+                            error_category = "CONNECTION_ERROR"
+                            retry_count += 1
+                            self.log_message(f"⚠️  {error_category} | Channel {channel} | {str(e)} | Attempt: {retry_count}/{max_retries}", phone)
+
+                            if retry_count < max_retries:
+                                reconnect_wait = 5
+                                self.log_message(f"🔌 Attempting to verify connection in {reconnect_wait}s...", phone)
+                                await asyncio.sleep(reconnect_wait)
+                            else:
+                                failed_channels.append(f"{phone}:{channel} ({error_category})")
+                                error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                                last_error = str(e)
+
+                        except asyncio.TimeoutError as e:
+                            error_category = "TIMEOUT"
+                            retry_count += 1
+                            self.log_message(f"⚠️  {error_category} | Channel {channel} | Request timed out | Attempt: {retry_count}/{max_retries}", phone)
+
+                            if retry_count < max_retries:
+                                await asyncio.sleep(10)
+                            else:
+                                failed_channels.append(f"{phone}:{channel} ({error_category})")
+                                error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                                last_error = "Request timeout"
+
+                        except ValueError as e:
+                            error_category = "VALIDATION_ERROR"
+                            error_msg = str(e)
+                            self.log_message(f"❌ {error_category} | Channel {channel} | {error_msg}", phone)
+                            failed_channels.append(f"{phone}:{channel} ({error_category})")
+                            error_summary[error_category] = error_summary.get(error_category, 0) + 1
+                            last_error = error_msg
+                            break  # Validation errors won't be fixed by retry
+
+                        except Exception as e:
+                            error_type = type(e).__name__
+                            error_msg = str(e)
+                            retry_count += 1
+
+                            self.log_message(f"⚠️  {error_type} | Channel {channel} | {error_msg} | Attempt: {retry_count}/{max_retries}", phone)
+
+                            if retry_count >= max_retries:
+                                failed_channels.append(f"{phone}:{channel} ({error_type})")
+                                error_summary[error_type] = error_summary.get(error_type, 0) + 1
+                                self.log_message(f"❌ FAILED | Channel {channel} | {error_type}: {error_msg}", phone)
+                                last_error = f"{error_type}: {error_msg}"
+                            else:
+                                await asyncio.sleep(5)
+
+            # Final status update with detailed summary
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
             if success_count == total_count and total_count > 0:
                 post['status'] = 'Sent'
-                self.log_message(f"Post {post['id']} fully sent: {success_count}/{total_count} successful")
+                self.log_message(f"✅ POST {post['id']} FULLY SENT | Success: {success_count}/{total_count} (100%)")
             elif success_count > 0:
+                percentage = (success_count / total_count) * 100
                 post['status'] = f'Partial ({success_count}/{total_count})'
-                self.log_message(f"Post {post['id']} partially sent: {success_count}/{total_count} successful")
+                self.log_message(f"⚠️  POST {post['id']} PARTIALLY SENT | Success: {success_count}/{total_count} ({percentage:.1f}%)")
+
+                # Error summary
+                if error_summary:
+                    self.log_message(f"📊 ERROR SUMMARY:")
+                    for error_type, count in sorted(error_summary.items(), key=lambda x: x[1], reverse=True):
+                        self.log_message(f"   • {error_type}: {count} channel(s)")
+
+                # Failed channels detail
+                if failed_channels:
+                    self.log_message(f"❌ FAILED CHANNELS ({len(failed_channels)}):")
+                    for fc in failed_channels[:10]:  # Show max 10
+                        self.log_message(f"   • {fc}")
+                    if len(failed_channels) > 10:
+                        self.log_message(f"   ... and {len(failed_channels) - 10} more")
             else:
                 post['status'] = 'Error'
-                self.log_message(f"Post {post['id']} failed: 0/{total_count} successful")
-            
+                self.log_message(f"❌ POST {post['id']} FAILED | Success: 0/{total_count} (0%)")
+
+                if error_summary:
+                    self.log_message(f"📊 ERROR SUMMARY:")
+                    for error_type, count in sorted(error_summary.items(), key=lambda x: x[1], reverse=True):
+                        self.log_message(f"   • {error_type}: {count} channel(s)")
+
+            # Update status in database
+            try:
+                self.db.update_scheduled_post(post['id'], {
+                    'status': post['status'],
+                    'sent_at': datetime.utcnow() if post['status'] == 'Sent' else None
+                })
+            except Exception as db_error:
+                self.logger.error(f"Failed to update post status in database: {str(db_error)}")
+
+            self.log_message(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
                 pass
-            
+
         except Exception as e:
             post['status'] = 'Error'
-            self.log_message(f"Scheduled post general error: {str(e)}")
+            self.log_message(f"❌ CRITICAL ERROR in scheduled post: {type(e).__name__} - {str(e)}")
+            import traceback
+            self.log_message(f"Stack trace: {traceback.format_exc()}")
+
+            # Update error status in database
+            try:
+                self.db.update_scheduled_post(post['id'], {
+                    'status': 'Error',
+                    'error_message': str(e)
+                })
+            except Exception as db_error:
+                self.logger.error(f"Failed to update error status in database: {str(db_error)}")
+
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
             except:
