@@ -204,6 +204,12 @@ class WebTelegramForwarder:
         try:
             self.accounts = self.db.get_all_accounts()
             self.logger.info(f"📥 Loaded {len(self.accounts)} accounts from database")
+
+            # Debug: Check which accounts have session_string
+            for acc in self.accounts:
+                has_session = bool(acc.get('session_string'))
+                session_len = len(acc.get('session_string', '')) if has_session else 0
+                self.logger.info(f"  📱 {acc['phone']}: session_string={'✅ present' if has_session else '❌ missing'} (length: {session_len})")
         except Exception as e:
             self.logger.error(f"❌ Failed to load accounts: {str(e)}")
             self.accounts = []
@@ -664,8 +670,16 @@ class WebTelegramForwarder:
             # Save session string to database for persistence
             try:
                 session_str = client.session.save()
-                self.db.update_account(phone, {'session_string': session_str})
-                self.log_message(f"✅ Session string saved to database", phone)
+                self.log_message(f"📝 Extracted session string (length: {len(session_str) if session_str else 0})", phone)
+
+                if session_str:
+                    self.db.update_account(phone, {'session_string': session_str})
+                    self.log_message(f"✅ Session string saved to database", phone)
+
+                    # Update local account dict too
+                    account['session_string'] = session_str
+                else:
+                    self.log_message(f"⚠️  Session string is empty, not saving", phone)
             except Exception as save_err:
                 self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
 
@@ -725,8 +739,16 @@ class WebTelegramForwarder:
                         # Save session string to database
                         try:
                             session_str = retry_client.session.save()
-                            self.db.update_account(phone, {'session_string': session_str})
-                            self.log_message(f"✅ Session string saved to database", phone)
+                            self.log_message(f"📝 Extracted session string (length: {len(session_str) if session_str else 0})", phone)
+
+                            if session_str:
+                                self.db.update_account(phone, {'session_string': session_str})
+                                self.log_message(f"✅ Session string saved to database", phone)
+
+                                # Update local account dict too
+                                account['session_string'] = session_str
+                            else:
+                                self.log_message(f"⚠️  Session string is empty, not saving", phone)
                         except Exception as save_err:
                             self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
 
@@ -788,8 +810,16 @@ class WebTelegramForwarder:
             # Save session string to database after successful authentication
             try:
                 session_str = client.session.save()
-                self.db.update_account(phone, {'session_string': session_str})
-                self.log_message(f"✅ Session string saved to database", phone)
+                self.log_message(f"📝 Extracted session string (length: {len(session_str) if session_str else 0})", phone)
+
+                if session_str:
+                    self.db.update_account(phone, {'session_string': session_str})
+                    self.log_message(f"✅ Session string saved to database", phone)
+
+                    # Update local account dict too
+                    account['session_string'] = session_str
+                else:
+                    self.log_message(f"⚠️  Session string is empty, not saving", phone)
             except Exception as save_err:
                 self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
 
@@ -870,8 +900,16 @@ class WebTelegramForwarder:
             # Save session string to database after successful 2FA authentication
             try:
                 session_str = client.session.save()
-                self.db.update_account(phone, {'session_string': session_str})
-                self.log_message(f"✅ Session string saved to database", phone)
+                self.log_message(f"📝 Extracted session string (length: {len(session_str) if session_str else 0})", phone)
+
+                if session_str:
+                    self.db.update_account(phone, {'session_string': session_str})
+                    self.log_message(f"✅ Session string saved to database", phone)
+
+                    # Update local account dict too
+                    account['session_string'] = session_str
+                else:
+                    self.log_message(f"⚠️  Session string is empty, not saving", phone)
             except Exception as save_err:
                 self.log_message(f"⚠️  Could not save session string: {str(save_err)}", phone)
 
