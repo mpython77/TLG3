@@ -1119,8 +1119,8 @@ class WebTelegramForwarder:
         if not post_ids_list:
             return {"success": False, "error": "No valid message IDs provided!"}
 
-        # Use naive datetime (no timezone) - user's input is treated as server's local time
-        current_time = datetime.now()
+        # Use UTC time - frontend sends UTC datetime from user's browser
+        current_time = datetime.utcnow()
 
         created_posts = []
 
@@ -1138,7 +1138,7 @@ class WebTelegramForwarder:
 
         for i, time_slot in enumerate(time_slots):
             try:
-                # Parse as naive datetime (no timezone)
+                # Parse UTC datetime from frontend (browser converted local to UTC)
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
             except ValueError:
                 continue
@@ -1275,9 +1275,9 @@ class WebTelegramForwarder:
 
         while self.scheduler_running:
             try:
-                # Use naive datetime (server's local time)
-                current_time = datetime.now()
-                self.log_message(f"Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                # Use UTC time - all datetimes stored in UTC
+                current_time = datetime.utcnow()
+                self.log_message(f"Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
                 posts_to_send = []
                 for post in self.scheduled_posts:
@@ -1293,12 +1293,12 @@ class WebTelegramForwarder:
                                     self.log_message(f"Invalid datetime format for post {post['id']}: {post_time}")
                                     continue
 
-                        # Remove timezone info if present, treat as naive datetime
+                        # Remove timezone info if present (treat as UTC naive datetime)
                         if hasattr(post_time, 'tzinfo') and post_time.tzinfo is not None:
                             post_time = post_time.replace(tzinfo=None)
 
                         time_diff = (post_time - current_time).total_seconds()
-                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')}, time diff: {time_diff:.0f} seconds")
+                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')} UTC, time diff: {time_diff:.0f} seconds")
 
                         if time_diff <= 0:
                             posts_to_send.append(post)
@@ -1736,13 +1736,14 @@ def index():
 @app.route('/api/server-time')
 @login_required
 def get_server_time():
-    utc_plus_1 = timezone(timedelta(hours=2))
-    current_time = datetime.now(utc_plus_1)
+    # Return UTC time - frontend will convert to user's local timezone
+    current_time = datetime.utcnow()
     return jsonify({
         'time': current_time.strftime('%H:%M:%S'),
         'date': current_time.strftime('%Y-%m-%d'),
         'formatted_date': current_time.strftime('%d/%m/%Y'),
         'timestamp': current_time.timestamp(),
+        'utc': True,  # Signal to frontend that this is UTC
         'iso': current_time.isoformat()
     })
 
