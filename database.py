@@ -283,6 +283,15 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def get_scheduled_post_by_id(self, post_id):
+        """Get scheduled post by ID"""
+        session = self.get_session()
+        try:
+            post = session.query(ScheduledPost).filter_by(id=post_id).first()
+            return post.to_dict() if post else None
+        finally:
+            session.close()
+
     def add_scheduled_post(self, post_data):
         """Add new scheduled post"""
         session = self.get_session()

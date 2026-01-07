@@ -1118,31 +1118,31 @@ class WebTelegramForwarder:
         
         if not post_ids_list:
             return {"success": False, "error": "No valid message IDs provided!"}
-        
-        utc_plus_1 = timezone(timedelta(hours=2))
-        current_time = datetime.now(utc_plus_1)
-        
+
+        # Use naive datetime (no timezone) - user's input is treated as server's local time
+        current_time = datetime.now()
+
         created_posts = []
-        
+
         all_channels = []
         for phone, channels in selected_channels.items():
             for channel in channels:
                 all_channels.append({'phone': phone, 'channel': channel})
-        
+
         num_channels = len(all_channels)
-        
+
         channel_used_ids = {}
         for ch_info in all_channels:
             channel_key = f"{ch_info['phone']}_{ch_info['channel']}"
             channel_used_ids[channel_key] = set()
-        
+
         for i, time_slot in enumerate(time_slots):
             try:
+                # Parse as naive datetime (no timezone)
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
-                slot_datetime = slot_datetime.replace(tzinfo=utc_plus_1)
             except ValueError:
                 continue
-                
+
             time_diff = (slot_datetime - current_time).total_seconds()
             if time_diff < -60:
                 continue
@@ -1271,14 +1271,14 @@ class WebTelegramForwarder:
         return {"success": True, "message": f"Scheduler started - {len(pending_posts)} pending posts"}
     
     async def run_scheduler(self):
-        utc_plus_1 = timezone(timedelta(hours=2))
         self.log_message("Scheduler started - checking every 10 seconds for pending posts")
-        
+
         while self.scheduler_running:
             try:
-                current_time = datetime.now(utc_plus_1)
+                # Use naive datetime (server's local time)
+                current_time = datetime.now()
                 self.log_message(f"Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                
+
                 posts_to_send = []
                 for post in self.scheduled_posts:
                     if post['status'] == 'Pending':
@@ -1286,29 +1286,28 @@ class WebTelegramForwarder:
                         if isinstance(post_time, str):
                             try:
                                 post_time = datetime.strptime(post_time, '%Y-%m-%d %H:%M:%S')
-                                post_time = post_time.replace(tzinfo=utc_plus_1)
                             except:
                                 try:
                                     post_time = datetime.strptime(post_time, '%Y-%m-%dT%H:%M')
-                                    post_time = post_time.replace(tzinfo=utc_plus_1)
                                 except:
                                     self.log_message(f"Invalid datetime format for post {post['id']}: {post_time}")
                                     continue
-                        
-                        if not hasattr(post_time, 'tzinfo') or post_time.tzinfo is None:
-                            post_time = post_time.replace(tzinfo=utc_plus_1)
-                        
+
+                        # Remove timezone info if present, treat as naive datetime
+                        if hasattr(post_time, 'tzinfo') and post_time.tzinfo is not None:
+                            post_time = post_time.replace(tzinfo=None)
+
                         time_diff = (post_time - current_time).total_seconds()
-                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')}, time diff: {time_diff} seconds")
-                        
+                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')}, time diff: {time_diff:.0f} seconds")
+
                         if time_diff <= 0:
                             posts_to_send.append(post)
                             self.log_message(f"Post {post['id']} ready to send!")
-                
+
                 if posts_to_send:
                     self.log_message(f"Found {len(posts_to_send)} posts ready to send")
-                    posts_to_send.sort(key=lambda x: x['datetime'] if isinstance(x['datetime'], datetime) else datetime.strptime(x['datetime'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=utc_plus_1))
-                    
+                    posts_to_send.sort(key=lambda x: x['datetime'] if isinstance(x['datetime'], datetime) else datetime.strptime(x['datetime'], '%Y-%m-%d %H:%M:%S'))
+
                     for post in posts_to_send:
                         if self.scheduler_running:
                             self.log_message(f"Sending post {post['id']}")
@@ -1319,7 +1318,7 @@ class WebTelegramForwarder:
                     pending_count = len([p for p in self.scheduled_posts if p['status'] == 'Pending'])
                     if pending_count > 0:
                         self.log_message(f"No posts ready to send. {pending_count} posts still pending.")
-                
+
                 await asyncio.sleep(10)
                 
             except Exception as e:
@@ -1334,6 +1333,17 @@ class WebTelegramForwarder:
     
     async def send_scheduled_post(self, post):
         try:
+            # CRITICAL: Verify post still exists in database and hasn't been deleted
+            post_id = post.get('id')
+            if post_id:
+                db_post = self.db.get_scheduled_post_by_id(post_id)
+                if not db_post:
+                    self.log_message(f"⚠️  Post ID {post_id} was deleted - skipping send")
+                    return
+                if db_post.get('status') != 'Pending':
+                    self.log_message(f"⚠️  Post ID {post_id} status is '{db_post.get('status')}' - skipping send")
+                    return
+
             post['status'] = 'Sending'
             try:
                 socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
