@@ -953,7 +953,7 @@
 
                 <div style="margin-bottom: 20px;">
                     <div class="server-time-display">
-                        <h4>Your Local Time</h4>
+                        <h4>Server Time (UTC+2)</h4>
                         <div class="current-time" id="serverTime">--:--:--</div>
                         <div class="current-date" id="serverDate">--/--/----</div>
                     </div>
@@ -1112,14 +1112,13 @@
         let scannedIdsData = {};
 
         function updateServerTime() {
-            // Show user's local time (not server time)
-            // This matches the time user enters in schedule form
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString('en-GB', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
-            const dateStr = now.toLocaleDateString('en-GB');
-
-            document.getElementById('serverTime').textContent = timeStr;
-            document.getElementById('serverDate').textContent = dateStr;
+            fetch('/api/server-time')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('serverTime').textContent = data.time;
+                    document.getElementById('serverDate').textContent = data.formatted_date;
+                })
+                .catch(() => {});
         }
 
         function showTab(tabName) {
@@ -1515,16 +1514,9 @@
                 const hour = slot.querySelector('.time-slot-hour').value;
                 const minute = slot.querySelector('.time-slot-minute').value;
                 if (date) {
-                    // Create Date object from user's local time input
-                    const localDatetime = new Date(`${date}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`);
-
-                    // Convert to UTC ISO string and format for backend
-                    // This ensures server receives UTC time regardless of user's timezone
-                    const utcDatetime = localDatetime.toISOString().slice(0, 16).replace('T', 'T');
-
                     timeSlots.push({
                         slot: index + 1,
-                        datetime: utcDatetime  // UTC format: "2026-01-07T10:00"
+                        datetime: `${date}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
                     });
                 }
             });
