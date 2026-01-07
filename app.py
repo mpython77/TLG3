@@ -1102,25 +1102,26 @@ class WebTelegramForwarder:
     def add_scheduled_posts(self, post_ids, time_slots, selected_channels):
         if not post_ids:
             return {"success": False, "error": "Enter at least one message ID!"}
-        
+
         if not time_slots:
             return {"success": False, "error": "Create at least one time slot!"}
-        
+
         if not selected_channels:
             return {"success": False, "error": "Select at least one channel!"}
-        
+
         post_ids_list = [id.strip() for id in post_ids.split(',') if id.strip()]
         try:
             post_ids_list = [str(int(pid)) for pid in post_ids_list]
             post_ids_list = list(set(post_ids_list))
         except ValueError:
             return {"success": False, "error": "All message IDs must be valid numbers!"}
-        
+
         if not post_ids_list:
             return {"success": False, "error": "No valid message IDs provided!"}
 
-        # Use UTC time - frontend sends UTC datetime from user's browser
-        current_time = datetime.utcnow()
+        # Use UTC+2 time zone (user's local time)
+        utc_plus_1 = timezone(timedelta(hours=2))
+        current_time = datetime.now(utc_plus_1)
 
         created_posts = []
 
@@ -1138,8 +1139,9 @@ class WebTelegramForwarder:
 
         for i, time_slot in enumerate(time_slots):
             try:
-                # Parse UTC datetime from frontend (browser converted local to UTC)
+                # Parse datetime and add UTC+2 timezone
                 slot_datetime = datetime.strptime(time_slot['datetime'], '%Y-%m-%dT%H:%M')
+                slot_datetime = slot_datetime.replace(tzinfo=utc_plus_1)
             except ValueError:
                 continue
 
@@ -1271,13 +1273,14 @@ class WebTelegramForwarder:
         return {"success": True, "message": f"Scheduler started - {len(pending_posts)} pending posts"}
     
     async def run_scheduler(self):
+        utc_plus_1 = timezone(timedelta(hours=2))
         self.log_message("Scheduler started - checking every 10 seconds for pending posts")
 
         while self.scheduler_running:
             try:
-                # Use UTC time - all datetimes stored in UTC
-                current_time = datetime.utcnow()
-                self.log_message(f"Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                # Use UTC+2 time zone (user's local time)
+                current_time = datetime.now(utc_plus_1)
+                self.log_message(f"Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
                 posts_to_send = []
                 for post in self.scheduled_posts:
@@ -1286,19 +1289,21 @@ class WebTelegramForwarder:
                         if isinstance(post_time, str):
                             try:
                                 post_time = datetime.strptime(post_time, '%Y-%m-%d %H:%M:%S')
+                                post_time = post_time.replace(tzinfo=utc_plus_1)
                             except:
                                 try:
                                     post_time = datetime.strptime(post_time, '%Y-%m-%dT%H:%M')
+                                    post_time = post_time.replace(tzinfo=utc_plus_1)
                                 except:
                                     self.log_message(f"Invalid datetime format for post {post['id']}: {post_time}")
                                     continue
 
-                        # Remove timezone info if present (treat as UTC naive datetime)
-                        if hasattr(post_time, 'tzinfo') and post_time.tzinfo is not None:
-                            post_time = post_time.replace(tzinfo=None)
+                        # Ensure timezone is set to UTC+2
+                        if not hasattr(post_time, 'tzinfo') or post_time.tzinfo is None:
+                            post_time = post_time.replace(tzinfo=utc_plus_1)
 
                         time_diff = (post_time - current_time).total_seconds()
-                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')} UTC, time diff: {time_diff:.0f} seconds")
+                        self.log_message(f"Post {post['id']}: scheduled for {post_time.strftime('%Y-%m-%d %H:%M:%S')}, time diff: {time_diff:.0f} seconds")
 
                         if time_diff <= 0:
                             posts_to_send.append(post)
@@ -1547,9 +1552,10 @@ class WebTelegramForwarder:
 
             # Update status in database
             try:
+                utc_plus_1 = timezone(timedelta(hours=2))
                 self.db.update_scheduled_post(post['id'], {
                     'status': post['status'],
-                    'sent_at': datetime.utcnow() if post['status'] == 'Sent' else None
+                    'sent_at': datetime.now(utc_plus_1) if post['status'] == 'Sent' else None
                 })
             except Exception as db_error:
                 self.logger.error(f"Failed to update post status in database: {str(db_error)}")
@@ -1736,14 +1742,14 @@ def index():
 @app.route('/api/server-time')
 @login_required
 def get_server_time():
-    # Return UTC time - frontend will convert to user's local timezone
-    current_time = datetime.utcnow()
+    # Return UTC+2 time (user's local timezone)
+    utc_plus_1 = timezone(timedelta(hours=2))
+    current_time = datetime.now(utc_plus_1)
     return jsonify({
         'time': current_time.strftime('%H:%M:%S'),
         'date': current_time.strftime('%Y-%m-%d'),
         'formatted_date': current_time.strftime('%d/%m/%Y'),
         'timestamp': current_time.timestamp(),
-        'utc': True,  # Signal to frontend that this is UTC
         'iso': current_time.isoformat()
     })
 
