@@ -270,41 +270,112 @@ class WebTelegramForwarder:
         return self.scanned_ids
 
     async def get_entity_safe(self, client, entity_id, phone):
+        """
+        Safely get entity with multiple retry strategies and caching.
+        CRITICAL for preventing "Could not find entity" errors during post sending.
+        """
         try:
             cache_key = f"{phone}_{entity_id}"
+
+            # Return from cache if available (performance optimization)
             if cache_key in self.entity_cache:
                 return self.entity_cache[cache_key]
-            
+
             original_id = entity_id
             entity_id = int(entity_id)
-            
+
+            # Strategy 1: Try different ID formats
             formats_to_try = []
-            
+
             if entity_id > 0:
+                # Positive ID - try different negative formats
                 formats_to_try.append(-1000000000000 - entity_id)
                 formats_to_try.append(-100000000000 - entity_id)
                 formats_to_try.append(-entity_id)
             else:
+                # Negative ID - try as-is and absolute
                 formats_to_try.append(entity_id)
                 formats_to_try.append(abs(entity_id))
-            
+
             formats_to_try.append(entity_id)
-            
+
+            # Try each format
+            last_error = None
             for fmt_id in formats_to_try:
                 try:
                     entity = await client.get_entity(fmt_id)
+                    # SUCCESS - cache and return
                     self.entity_cache[cache_key] = entity
+                    self.log_message(f"✓ Entity {original_id} cached (format: {fmt_id})", phone)
                     return entity
-                except:
+                except Exception as e:
+                    last_error = e
                     continue
-            
-            self.log_message(f"Entity not found with ID {original_id}. Tried formats: {formats_to_try}", phone)
-            raise ValueError(f"Could not find entity {original_id}")
-                
+
+            # Strategy 2: Force update by iterating dialogs (slower but more reliable)
+            # This helps when entity is not in session cache
+            try:
+                self.log_message(f"🔄 Attempting dialog-based entity lookup for {original_id}...", phone)
+                async for dialog in client.iter_dialogs(limit=200):
+                    if hasattr(dialog.entity, 'id'):
+                        # Check all format variations
+                        for fmt_id in formats_to_try:
+                            if dialog.entity.id == fmt_id:
+                                self.entity_cache[cache_key] = dialog.entity
+                                self.log_message(f"✓ Entity {original_id} found via dialogs and cached", phone)
+                                return dialog.entity
+            except Exception as dialog_error:
+                self.log_message(f"Dialog lookup failed: {str(dialog_error)}", phone)
+
+            # All strategies failed
+            error_msg = f"Could not find entity {original_id}"
+            if last_error:
+                error_msg += f" (last error: {str(last_error)})"
+            self.log_message(f"❌ {error_msg}. Tried formats: {formats_to_try}", phone)
+            raise ValueError(error_msg)
+
+        except ValueError:
+            # Re-raise ValueError as-is
+            raise
         except Exception as e:
             self.log_message(f"Error getting entity {entity_id}: {str(e)}", phone)
             raise
-    
+
+    async def preload_account_entities(self, client, phone):
+        """
+        Preload all source and target channel entities for an account into cache.
+        This prevents "Could not find entity" errors during scheduled post sending.
+        Should be called after successful connection or reconnection.
+        """
+        account = next((acc for acc in self.accounts if acc['phone'] == phone), None)
+        if not account:
+            self.log_message(f"⚠️ Cannot preload entities - account not found", phone)
+            return
+
+        try:
+            self.log_message(f"📥 Preloading entities after connection...", phone)
+
+            # Preload source channel
+            try:
+                source_entity = await self.get_entity_safe(client, account['source_channel'], phone)
+                self.log_message(f"✓ Source channel cached: {source_entity.title if hasattr(source_entity, 'title') else 'Channel'}", phone)
+            except Exception as e:
+                self.log_message(f"⚠️ Source channel {account['source_channel']} not accessible: {str(e)}", phone)
+
+            # Preload all target channels
+            cached_count = 0
+            for target_id in account['target_channels']:
+                try:
+                    target_entity = await self.get_entity_safe(client, target_id, phone)
+                    cached_count += 1
+                except Exception as e:
+                    self.log_message(f"⚠️ Target channel {target_id} not accessible: {str(e)}", phone)
+
+            self.log_message(f"✅ Preloaded {cached_count}/{len(account['target_channels'])} target channels", phone)
+
+        except Exception as e:
+            self.log_message(f"⚠️ Entity preload error: {str(e)}", phone)
+
     def add_account(self, api_id, api_hash, phone, account_name, source_channel, target_channels):
         try:
             int(source_channel)
@@ -379,7 +450,13 @@ class WebTelegramForwarder:
             if phone_variant in self.clients:
                 try:
                     if self.loop:
-                        asyncio.run_coroutine_threadsafe(self.clients[phone_variant].disconnect(), self.loop)
+                        # FIXED: Properly await the disconnect coroutine
+                        future = asyncio.run_coroutine_threadsafe(
+                            self.clients[phone_variant].disconnect(),
+                            self.loop
+                        )
+                        # Wait for disconnect to complete (max 5 seconds)
+                        future.result(timeout=5.0)
                     del self.clients[phone_variant]
                     self.log_message(f"Client disconnected: {phone_variant}")
                     break
@@ -391,7 +468,13 @@ class WebTelegramForwarder:
             self.db.delete_account(phone)
             # Reload accounts list
             self.accounts = self.load_accounts()
-            self.entity_cache.clear()
+
+            # FIXED: Only clear entity cache for THIS phone, not all phones
+            # This prevents "Could not find entity" errors for other connected accounts
+            keys_to_remove = [key for key in self.entity_cache.keys() if key.startswith(f"{phone}_")]
+            for key in keys_to_remove:
+                del self.entity_cache[key]
+            self.log_message(f"Cleared {len(keys_to_remove)} cached entities for {phone}", phone)
 
             self.log_message(f"Account removed: {phone}")
             return {"success": True, "message": f"{phone} account removed!"}
@@ -701,19 +784,9 @@ class WebTelegramForwarder:
             except Exception as e:
                 self.log_message(f"Warning: Could not save session string: {str(e)}", phone)
 
-            try:
-                source_entity = await self.get_entity_safe(client, account['source_channel'], phone)
-                self.log_message(f"Source channel verified: {source_entity.title if hasattr(source_entity, 'title') else 'Channel'}", phone)
-                
-                for target_id in account['target_channels']:
-                    try:
-                        target_entity = await self.get_entity_safe(client, target_id, phone)
-                        self.log_message(f"Target channel {target_id} verified: {target_entity.title if hasattr(target_entity, 'title') else 'Channel'}", phone)
-                    except Exception as e:
-                        self.log_message(f"Warning: Target channel {target_id} not accessible: {str(e)}", phone)
-                        
-            except Exception as e:
-                self.log_message(f"Warning: Could not verify channels: {str(e)}", phone)
+            # CRITICAL: Preload all entities into cache to prevent "Could not find entity" errors
+            # This is essential for scheduled post sending to work reliably
+            await self.preload_account_entities(client, phone)
             
             return 'success'
             
@@ -845,6 +918,9 @@ class WebTelegramForwarder:
             except Exception as e:
                 self.log_message(f"Warning: Could not save session: {str(e)}", phone)
 
+            # CRITICAL: Preload entities after successful authentication
+            await self.preload_account_entities(client, phone)
+
             if phone in self.pending_auth:
                 del self.pending_auth[phone]
 
@@ -853,12 +929,12 @@ class WebTelegramForwarder:
                 socketio.emit('accounts_updated', self.get_accounts_data())
             except:
                 pass
-            
+
             if self.connection_paused and self.connection_in_progress:
                 self.log_message("Resuming connection process...")
                 await asyncio.sleep(1)
                 await self.resume_connection_after_auth()
-            
+
         except SessionPasswordNeededError:
             self.log_message("2FA password required", phone)
             
@@ -936,6 +1012,9 @@ class WebTelegramForwarder:
             except Exception as e:
                 self.log_message(f"Warning: Could not save session: {str(e)}", phone)
 
+            # CRITICAL: Preload entities after successful 2FA authentication
+            await self.preload_account_entities(client, phone)
+
             if phone in self.pending_auth:
                 del self.pending_auth[phone]
 
@@ -944,12 +1023,12 @@ class WebTelegramForwarder:
                 socketio.emit('accounts_updated', self.get_accounts_data())
             except:
                 pass
-            
+
             if self.connection_paused and self.connection_in_progress:
                 self.log_message("Resuming connection process...")
                 await asyncio.sleep(1)
                 await self.resume_connection_after_auth()
-            
+
         except Exception as e:
             self.log_message(f"2FA password error: {str(e)}", phone)
             account['status'] = '2FA error'
@@ -1439,6 +1518,8 @@ class WebTelegramForwarder:
                             self.log_message(f"⚠️ Account disconnected, reconnecting...", phone)
                             await client.connect()
                             await asyncio.sleep(2)
+                            # CRITICAL: Reload entities after reconnect to prevent "Could not find entity" errors
+                            await self.preload_account_entities(client, phone)
 
                         delay = random.uniform(self.min_delay, self.max_delay)
                         self.log_message(f"⏳ Waiting {delay:.1f}s before sending to channel {channel}", phone)
@@ -1511,6 +1592,8 @@ class WebTelegramForwarder:
                                 self.log_message(f"🔌 Reconnecting account for retry...", phone)
                                 await client.connect()
                                 await asyncio.sleep(2)
+                                # CRITICAL: Reload entities after reconnect to prevent "Could not find entity" errors
+                                await self.preload_account_entities(client, phone)
 
                             self.log_message(f"🔄 Retrying channel {channel}", phone)
                             await self.send_single_scheduled_post(client, post_id, channel, phone)
@@ -1705,21 +1788,27 @@ class WebTelegramForwarder:
     
     async def async_disconnect_all(self):
         disconnect_tasks = []
-        
+
         for phone, client in list(self.clients.items()):
             try:
                 task = asyncio.create_task(self.safe_disconnect_client(client, phone))
                 disconnect_tasks.append(task)
             except Exception as e:
                 self.log_message(f"Error creating disconnect task: {str(e)}", phone)
-        
+
         if disconnect_tasks:
             await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-        
+
         self.clients.clear()
         self.pending_auth.clear()
+
+        # IMPROVED: Clear entity cache for disconnected accounts
+        # Note: It's safe to clear all here since all clients are disconnecting
+        # But we log how many entries we're clearing for transparency
+        cache_size = len(self.entity_cache)
         self.entity_cache.clear()
-        
+        self.log_message(f"Cleared {cache_size} cached entities from {len(disconnect_tasks)} accounts")
+
         try:
             socketio.emit('accounts_updated', self.get_accounts_data())
         except:
