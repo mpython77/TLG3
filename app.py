@@ -709,13 +709,33 @@ class WebTelegramForwarder:
                 self.log_message(f"⚠️ DB reload error: {str(e)}, using memory", phone)
                 session_string = account.get('session_string')
 
-            # Validate and use session string
-            if session_string and len(session_string.strip()) > 10:  # Valid session strings are longer than 10 chars
-                self.log_message(f"✓ Using saved session from database (no code needed)", phone)
-                session = StringSession(session_string.strip())
-            else:
+            # Validate and use session string with enhanced validation
+            session_valid = False
+            if session_string and len(session_string.strip()) > 10:
+                try:
+                    # Try to create StringSession to validate format
+                    session = StringSession(session_string.strip())
+                    session_valid = True
+                    self.log_message(f"✓ Using saved session from database (length: {len(session_string.strip())})", phone)
+
+                    # Additional validation: Check if session can be decoded
+                    try:
+                        import base64
+                        # StringSession format: base64(dc_id + auth_key + ...)
+                        decoded = base64.urlsafe_b64decode(session_string.strip() + '==')
+                        if len(decoded) < 250:  # Telethon sessions are usually 250+ bytes
+                            self.log_message(f"⚠️ Session seems too short after decode ({len(decoded)} bytes), may be corrupted", phone)
+                    except Exception as validation_error:
+                        self.log_message(f"⚠️ Session validation warning: {str(validation_error)}", phone)
+
+                except Exception as e:
+                    self.log_message(f"❌ Session string is corrupted or invalid: {str(e)}", phone)
+                    self.log_message(f"🔄 Will request new authentication code", phone)
+                    session_valid = False
+
+            if not session_valid:
                 if session_string:
-                    self.log_message(f"⚠️ Session string too short or invalid, requesting new code", phone)
+                    self.log_message(f"⚠️ Session string exists but invalid/corrupted, requesting new code", phone)
                 else:
                     self.log_message(f"ℹ️ No session found, requesting authentication code", phone)
                 # Use empty StringSession for first-time auth
@@ -735,7 +755,18 @@ class WebTelegramForwarder:
 
             if not await client.is_user_authorized():
                 if session_string:
-                    self.log_message(f"⚠️ Saved session expired - requesting new authentication code", phone)
+                    self.log_message(f"⚠️ Saved session EXPIRED or INVALIDATED by Telegram", phone)
+                    self.log_message(f"📋 Possible reasons: IP change, inactivity, security policy, or manual logout", phone)
+                    self.log_message(f"🔄 Requesting new authentication code to generate fresh session", phone)
+
+                    # Check if this might be an API ID mismatch
+                    try:
+                        # Log API credentials being used (first/last chars only for security)
+                        api_id_str = str(account['api_id'])
+                        api_hash_str = str(account['api_hash'])
+                        self.log_message(f"🔑 Using API ID: {api_id_str[:3]}...{api_id_str[-3:]} (Hash: {api_hash_str[:4]}...{api_hash_str[-4:]})", phone)
+                    except:
+                        pass
                 else:
                     self.log_message(f"New account - sending authentication code", phone)
 
@@ -769,20 +800,35 @@ class WebTelegramForwarder:
             else:
                 self.log_message(f"✓ Connected successfully: {me.first_name}", phone)
 
-            # Save/update session string to database
+            # Save/update session string to database with validation
             try:
                 current_session_str = client.session.save()
 
-                if current_session_str and current_session_str != account.get('session_string'):
-                    self.db.update_account(phone, {
-                        'session_string': current_session_str,
-                        'status': 'Connected'
-                    })
-                    self.log_message(f"✓ Session updated in database for future use", phone)
-                    # Reload accounts to get updated data
-                    self.accounts = self.load_accounts()
+                if current_session_str and len(current_session_str) > 10:
+                    # Validate session before saving
+                    try:
+                        import base64
+                        decoded = base64.urlsafe_b64decode(current_session_str + '==')
+                        session_size = len(decoded)
+                        self.log_message(f"✓ Session validated ({session_size} bytes)", phone)
+                    except Exception as val_error:
+                        self.log_message(f"⚠️ Session validation warning: {str(val_error)}", phone)
+
+                    # Only update if changed
+                    if current_session_str != account.get('session_string'):
+                        self.db.update_account(phone, {
+                            'session_string': current_session_str,
+                            'status': 'Connected'
+                        })
+                        self.log_message(f"💾 Session updated in database (length: {len(current_session_str)})", phone)
+                        # Reload accounts to get updated data
+                        self.accounts = self.load_accounts()
+                    else:
+                        self.log_message(f"ℹ️ Session unchanged, no database update needed", phone)
+                else:
+                    self.log_message(f"⚠️ Session string is empty or too short, not saving", phone)
             except Exception as e:
-                self.log_message(f"Warning: Could not save session string: {str(e)}", phone)
+                self.log_message(f"❌ Error saving session string: {str(e)}", phone)
 
             # CRITICAL: Preload all entities into cache to prevent "Could not find entity" errors
             # This is essential for scheduled post sending to work reliably
@@ -901,22 +947,32 @@ class WebTelegramForwarder:
             account['status'] = 'Connected'
             self.log_message(f"Authentication successful: {me.first_name}", phone)
 
-            # Save session string to database
+            # Save session string to database with validation
             try:
                 if isinstance(client.session, StringSession):
                     session_str = client.session.save()
                 else:
                     session_str = StringSession.save(client.session)
 
-                if session_str:
+                if session_str and len(session_str) > 10:
+                    # Validate session before saving
+                    try:
+                        import base64
+                        decoded = base64.urlsafe_b64decode(session_str + '==')
+                        self.log_message(f"✓ Session validated before save ({len(decoded)} bytes)", phone)
+                    except Exception as val_error:
+                        self.log_message(f"⚠️ Session validation warning during save: {str(val_error)}", phone)
+
                     self.db.update_account(phone, {
                         'session_string': session_str,
                         'status': 'Connected'
                     })
-                    self.log_message(f"Session saved after authentication", phone)
+                    self.log_message(f"💾 Session saved to database (length: {len(session_str)})", phone)
                     self.accounts = self.load_accounts()
+                else:
+                    self.log_message(f"⚠️ Session string is empty or too short, not saving", phone)
             except Exception as e:
-                self.log_message(f"Warning: Could not save session: {str(e)}", phone)
+                self.log_message(f"❌ Error saving session: {str(e)}", phone)
 
             # CRITICAL: Preload entities after successful authentication
             await self.preload_account_entities(client, phone)
@@ -995,22 +1051,32 @@ class WebTelegramForwarder:
             account['status'] = 'Connected'
             self.log_message(f"2FA authentication successful: {me.first_name}", phone)
 
-            # Save session string to database
+            # Save session string to database with validation
             try:
                 if isinstance(client.session, StringSession):
                     session_str = client.session.save()
                 else:
                     session_str = StringSession.save(client.session)
 
-                if session_str:
+                if session_str and len(session_str) > 10:
+                    # Validate session before saving
+                    try:
+                        import base64
+                        decoded = base64.urlsafe_b64decode(session_str + '==')
+                        self.log_message(f"✓ Session validated before save ({len(decoded)} bytes)", phone)
+                    except Exception as val_error:
+                        self.log_message(f"⚠️ Session validation warning during save: {str(val_error)}", phone)
+
                     self.db.update_account(phone, {
                         'session_string': session_str,
                         'status': 'Connected'
                     })
-                    self.log_message(f"Session saved after 2FA", phone)
+                    self.log_message(f"💾 Session saved to database after 2FA (length: {len(session_str)})", phone)
                     self.accounts = self.load_accounts()
+                else:
+                    self.log_message(f"⚠️ Session string is empty or too short, not saving", phone)
             except Exception as e:
-                self.log_message(f"Warning: Could not save session: {str(e)}", phone)
+                self.log_message(f"❌ Error saving session after 2FA: {str(e)}", phone)
 
             # CRITICAL: Preload entities after successful 2FA authentication
             await self.preload_account_entities(client, phone)
