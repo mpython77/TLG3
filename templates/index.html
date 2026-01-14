@@ -1291,7 +1291,12 @@
 
             let hasIds = false;
             for (const phone in data) {
-                if (data[phone] && data[phone].length > 0) {
+                // Support both old format (array) and new format (object with name and ids)
+                const accountData = data[phone];
+                const accountName = accountData.name || phone;
+                const ids = accountData.ids || accountData; // Backward compatibility
+
+                if (ids && ids.length > 0) {
                     hasIds = true;
 
                     // Phone header with "Select All for this account" checkbox
@@ -1306,11 +1311,17 @@
                     accountSelectAll.style.cssText = 'cursor: pointer; width: 16px; height: 16px;';
                     accountSelectAll.onchange = () => toggleAccountIds(phone);
 
-                    // Create label with phone number
+                    // Create label with phone number AND account name
                     const label = document.createElement('label');
                     label.htmlFor = `selectAll_${phone}`;
                     label.style.cssText = 'cursor: pointer; margin: 0; color: white; flex: 1;';
-                    label.textContent = `📱 ${phone}`;
+
+                    // Display format: "📱 Phone (Account Name)" or just "📱 Phone" if name equals phone
+                    if (accountName && accountName !== phone) {
+                        label.innerHTML = `📱 <span style="font-weight: 600;">${phone}</span> <span style="font-size: 13px; opacity: 0.9;">(${accountName})</span>`;
+                    } else {
+                        label.textContent = `📱 ${phone}`;
+                    }
 
                     // Add "Select All" text indicator
                     const selectAllText = document.createElement('span');
@@ -1323,7 +1334,7 @@
                     container.appendChild(phoneHeader);
 
                     // Add IDs for this account with data-phone attribute
-                    data[phone].forEach(id => {
+                    ids.forEach(id => {
                         const item = document.createElement('div');
                         item.className = 'id-checkbox-item';
                         item.innerHTML = `
