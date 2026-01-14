@@ -267,7 +267,21 @@ class WebTelegramForwarder:
             pass
     
     def get_scanned_ids(self):
-        return self.scanned_ids
+        """
+        Returns scanned IDs with account names for better display.
+        Format: {phone: {name: account_name, ids: [id1, id2, ...]}}
+        """
+        result = {}
+        for phone, ids in self.scanned_ids.items():
+            # Find account to get name
+            account = next((acc for acc in self.accounts if acc['phone'] == phone), None)
+            account_name = account.get('account_name', phone) if account else phone
+
+            result[phone] = {
+                'name': account_name,
+                'ids': ids
+            }
+        return result
 
     async def get_entity_safe(self, client, entity_id, phone):
         """
@@ -1218,9 +1232,10 @@ class WebTelegramForwarder:
         
         self.scan_message(f"Scan completed")
         self.log_message(f"Post scanning completed")
-        
+
         try:
-            socketio.emit('scanned_ids_updated', {'ids': self.scanned_ids})
+            # Send scanned IDs with account names for better display
+            socketio.emit('scanned_ids_updated', {'ids': self.get_scanned_ids()})
         except:
             pass
     
