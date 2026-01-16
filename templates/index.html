@@ -1263,7 +1263,13 @@
 
         function toggleAllChannels() {
             const selectAll = document.getElementById('selectAllChannels').checked;
+            // Toggle all channel checkboxes
             document.querySelectorAll('.channel-checkbox').forEach(cb => cb.checked = selectAll);
+            // Also toggle all account group checkboxes
+            document.querySelectorAll('.account-group-checkbox').forEach(cb => {
+                cb.checked = selectAll;
+                cb.indeterminate = false;
+            });
         }
 
         function showScannedIdsModal() {
@@ -1797,18 +1803,98 @@
             accounts.forEach(account => {
                 const accountDiv = document.createElement('div');
                 accountDiv.style.cssText = 'margin-bottom: 15px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px;';
-                accountDiv.innerHTML = `<h4 style="margin-bottom: 10px; color: #1e293b;">${account.account_name !== account.phone ? account.account_name : account.phone}</h4>`;
+
+                // Create header with Select Group checkbox
+                const headerDiv = document.createElement('div');
+                headerDiv.style.cssText = 'display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 8px; background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%); border-radius: 6px;';
+
+                const selectGroupCheckbox = document.createElement('input');
+                selectGroupCheckbox.type = 'checkbox';
+                selectGroupCheckbox.id = `selectGroup_${account.phone}`;
+                selectGroupCheckbox.className = 'account-group-checkbox';
+                selectGroupCheckbox.style.cssText = 'cursor: pointer; width: 16px; height: 16px;';
+                selectGroupCheckbox.onchange = () => toggleAccountChannels(account.phone);
+
+                const headerLabel = document.createElement('label');
+                headerLabel.htmlFor = `selectGroup_${account.phone}`;
+                headerLabel.style.cssText = 'cursor: pointer; margin: 0; font-weight: 700; color: #1e293b; flex: 1;';
+                headerLabel.textContent = account.account_name !== account.phone ? account.account_name : account.phone;
+
+                const selectGroupText = document.createElement('span');
+                selectGroupText.style.cssText = 'font-size: 11px; color: #6366f1; font-weight: 500; background: rgba(99, 102, 241, 0.1); padding: 2px 8px; border-radius: 4px;';
+                selectGroupText.textContent = 'Select Group';
+
+                headerDiv.appendChild(selectGroupCheckbox);
+                headerDiv.appendChild(headerLabel);
+                headerDiv.appendChild(selectGroupText);
+                accountDiv.appendChild(headerDiv);
+
                 const checkboxesDiv = document.createElement('div');
                 checkboxesDiv.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;';
                 account.target_channels.forEach(channel => {
                     const label = document.createElement('label');
                     label.style.cssText = 'display: flex; align-items: center; gap: 6px; cursor: pointer;';
-                    label.innerHTML = `<input type="checkbox" class="channel-checkbox" value="${account.phone}_${channel}"> ${channel}`;
+                    label.innerHTML = `<input type="checkbox" class="channel-checkbox" data-phone="${account.phone}" value="${account.phone}_${channel}" onchange="updateAccountGroupCheckbox('${account.phone}')"> ${channel}`;
                     checkboxesDiv.appendChild(label);
                 });
                 accountDiv.appendChild(checkboxesDiv);
                 container.appendChild(accountDiv);
             });
+        }
+
+        function toggleAccountChannels(phone) {
+            const groupCheckbox = document.getElementById(`selectGroup_${phone}`);
+            const isChecked = groupCheckbox.checked;
+
+            // Toggle all channels for this specific account
+            document.querySelectorAll(`.channel-checkbox[data-phone="${phone}"]`).forEach(cb => {
+                cb.checked = isChecked;
+            });
+
+            // Update global "Select All Channels" checkbox
+            updateSelectAllCheckbox();
+        }
+
+        function updateAccountGroupCheckbox(phone) {
+            const accountCheckboxes = document.querySelectorAll(`.channel-checkbox[data-phone="${phone}"]`);
+            const checkedAccountCheckboxes = document.querySelectorAll(`.channel-checkbox[data-phone="${phone}"]:checked`);
+            const groupCheckbox = document.getElementById(`selectGroup_${phone}`);
+
+            if (groupCheckbox) {
+                if (checkedAccountCheckboxes.length === accountCheckboxes.length && accountCheckboxes.length > 0) {
+                    groupCheckbox.checked = true;
+                    groupCheckbox.indeterminate = false;
+                } else if (checkedAccountCheckboxes.length > 0) {
+                    groupCheckbox.checked = false;
+                    groupCheckbox.indeterminate = true;
+                } else {
+                    groupCheckbox.checked = false;
+                    groupCheckbox.indeterminate = false;
+                }
+            }
+
+            // Update global "Select All Channels" checkbox
+            updateSelectAllCheckbox();
+        }
+
+        function updateSelectAllCheckbox() {
+            const allCheckboxes = document.querySelectorAll('.channel-checkbox');
+            const checkedCheckboxes = document.querySelectorAll('.channel-checkbox:checked');
+            const selectAllCheckbox = document.getElementById('selectAllChannels');
+
+            if (allCheckboxes.length === 0) {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            } else if (checkedCheckboxes.length === allCheckboxes.length) {
+                selectAllCheckbox.checked = true;
+                selectAllCheckbox.indeterminate = false;
+            } else if (checkedCheckboxes.length > 0) {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = true;
+            } else {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            }
         }
 
         function updateScheduledPostsTable(posts) {
